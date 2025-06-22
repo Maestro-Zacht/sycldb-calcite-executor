@@ -2,6 +2,44 @@
 
 #include <string>
 
+#define HT_MAX_CELLS 1000000
+
+class GroupByHashTable
+{
+private:
+    int **ht;
+    int col_num;
+    unsigned long long prod_ranges, cell_num, cell_size;
+
+public:
+    GroupByHashTable(int cols, unsigned long long ranges)
+        : col_num(cols), prod_ranges(ranges), cell_size((cols + 2) * HT_MAX_CELLS)
+    {
+        unsigned long long total_cells = prod_ranges * (col_num + 2);
+        cell_num = total_cells / cell_size;
+        unsigned long long remainder = total_cells % cell_size;
+        if (remainder != 0)
+            cell_num++;
+
+        ht = new int *[cell_num];
+        for (unsigned long long i = 0; i < cell_num - 1; i++)
+            ht[i] = new int[cell_size];
+        ht[cell_num - 1] = new int[remainder != 0 ? remainder : cell_size];
+    }
+    ~GroupByHashTable()
+    {
+        for (unsigned long long i = 0; i < cell_num; i++)
+            delete[] ht[i];
+        delete[] ht;
+    }
+    int &operator[](unsigned long long idx)
+    {
+        unsigned long long cell_idx = idx / cell_size,
+                           cell_offset = idx % cell_size;
+        return ht[cell_idx][cell_offset];
+    }
+};
+
 template <typename T>
 inline T element_operation(T a, T b, const std::string &op)
 {
@@ -79,9 +117,10 @@ std::pair<int **, int> group_by_aggregate(int **group_columns, int *agg_column, 
         prod_ranges *= max - min + 1;
     }
 
-    int *ht = new int[prod_ranges * (col_num + 2)], result_size = 0;
+    int result_size = 0;
     std::set<int> hash_set;
     std::vector<int> result_groups;
+    GroupByHashTable ht(col_num, prod_ranges);
 
     for (int i = 0; i < col_len; i++)
     {
@@ -137,7 +176,6 @@ std::pair<int **, int> group_by_aggregate(int **group_columns, int *agg_column, 
         ((uint64_t *)results[col_num])[i] = *((uint64_t *)&ht[hash * (col_num + 2) + col_num]);
     }
 
-    delete[] ht;
     delete[] max_values;
     delete[] min_values;
     return std::make_pair(results, result_size);
