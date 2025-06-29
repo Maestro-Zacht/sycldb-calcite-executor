@@ -1,5 +1,6 @@
 #include <iostream>
 #include <fstream>
+#include <chrono>
 
 #include <thrift/protocol/TBinaryProtocol.h>
 #include <thrift/transport/TSocket.h>
@@ -18,6 +19,8 @@ using namespace apache::thrift::protocol;
 using namespace apache::thrift::transport;
 
 #define MAX_NTABLES 5
+
+#define NUM_QUERY_REPS 1100
 
 std::map<std::string, int> table_column_numbers({{"lineorder", 17},
                                                  {"part", 9},
@@ -567,8 +570,8 @@ void execute_result(const PlanResult &result)
             std::cout << "Table " << rel.tables[0] << " was never loaded." << std::endl;
             return;
         }
-        std::set<int>& column_idxs = exec_info.loaded_columns[rel.tables[0]];
-        //tables[current_table] = generate_dummy(100 * (current_table + 1), table_column_numbers[rel.tables[0]]);
+        std::set<int> &column_idxs = exec_info.loaded_columns[rel.tables[0]];
+        // tables[current_table] = generate_dummy(100 * (current_table + 1), table_column_numbers[rel.tables[0]]);
         tables[current_table] = loadTable(rel.tables[0], table_column_numbers[rel.tables[0]], column_idxs);
         tables[current_table].table_name = rel.tables[0];
         if (exec_info.group_by_columns.find(rel.tables[0]) != exec_info.group_by_columns.end())
@@ -630,7 +633,7 @@ int main(int argc, char **argv)
     CalciteServerClient client(protocol);
     std::string sql;
 
-    if (argc == 2)
+    if (argc == 3)
     {
         std::ifstream file(argv[1]);
         if (!file.is_open())
@@ -646,11 +649,12 @@ int main(int argc, char **argv)
     }
     else
     {
-        sql = "select sum(lo_revenue)\
-        from lineorder, ddate, part, supplier\
-        where lo_orderdate = d_datekey\
-        and lo_partkey = p_partkey\
-        and lo_suppkey = s_suppkey;";
+        // sql = "select sum(lo_revenue)\
+        // from lineorder, ddate, part, supplier\
+        // where lo_orderdate = d_datekey\
+        // and lo_partkey = p_partkey\
+        // and lo_suppkey = s_suppkey;";
+        return 1;
     }
 
     try
@@ -658,14 +662,35 @@ int main(int argc, char **argv)
         std::cout << "SQL Query: " << sql << std::endl;
         transport->open();
         std::cout << "Transport opened successfully." << std::endl;
-        PlanResult result;
-        client.parse(result, sql);
 
-        std::cout << "Result: " << result << std::endl;
+        std::ofstream output_file(argv[2] + std::string(".txt"), std::ios::out | std::ios::trunc);
+        if (!output_file.is_open())
+        {
+            std::cerr << "Could not open output file: " << argv[2] << ".txt" << std::endl;
+            return 1;
+        }
 
-        execute_result(result);
+        for (int i = 0; i < NUM_QUERY_REPS; i++)
+        {
+            PlanResult result;
 
-        client.shutdown();
+            auto start = std::chrono::steady_clock::now();
+            client.parse(result, sql);
+            auto end = std::chrono::steady_clock::now();
+            auto elapsed_seconds = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
+            std::cout << "Query parsed successfully in " << elapsed_seconds << " microseconds" << std::endl;
+            output_file << elapsed_seconds << std::endl;
+        }
+
+        // std::cout << "Result: " << result << std::endl;
+
+        // std::cout << "Query returned successfully in " << elapsed_seconds << " microseconds" << std::endl;
+
+        output_file.close();
+
+        // execute_result(result);
+
+        // client.shutdown();
 
         transport->close();
     }
