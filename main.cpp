@@ -490,12 +490,12 @@ void parse_project(const std::vector<ExprType> &exprs, TableData<int> &table_dat
                                   table_data.columns[table_data.column_indices.at(exprs[i].operands[0].input)].content,
                                   table_data.columns[table_data.column_indices.at(exprs[i].operands[1].input)].content,
                                   table_data.flags, table_data.col_len, exprs[i].op, queue);
-                //new_columns[i].min_value =
-                //    std::min(table_data.columns[table_data.column_indices.at(exprs[i].operands[0].input)].min_value,
-                //             table_data.columns[table_data.column_indices.at(exprs[i].operands[1].input)].min_value);
-                //new_columns[i].max_value =
-                //    std::max(table_data.columns[table_data.column_indices.at(exprs[i].operands[0].input)].max_value,
-                //             table_data.columns[table_data.column_indices.at(exprs[i].operands[1].input)].max_value);
+                // new_columns[i].min_value =
+                //     std::min(table_data.columns[table_data.column_indices.at(exprs[i].operands[0].input)].min_value,
+                //              table_data.columns[table_data.column_indices.at(exprs[i].operands[1].input)].min_value);
+                // new_columns[i].max_value =
+                //     std::max(table_data.columns[table_data.column_indices.at(exprs[i].operands[0].input)].max_value,
+                //              table_data.columns[table_data.column_indices.at(exprs[i].operands[1].input)].max_value);
             }
             else if (exprs[i].operands[0].exprType == ExprOption::LITERAL &&
                      exprs[i].operands[1].exprType == ExprOption::COLUMN)
@@ -504,8 +504,8 @@ void parse_project(const std::vector<ExprType> &exprs, TableData<int> &table_dat
                                   (int)exprs[i].operands[0].literal.value,
                                   table_data.columns[table_data.column_indices.at(exprs[i].operands[1].input)].content,
                                   table_data.flags, table_data.col_len, exprs[i].op, queue);
-                //new_columns[i].min_value = table_data.columns[table_data.column_indices.at(exprs[i].operands[1].input)].min_value;
-                //new_columns[i].max_value = table_data.columns[table_data.column_indices.at(exprs[i].operands[1].input)].max_value;
+                // new_columns[i].min_value = table_data.columns[table_data.column_indices.at(exprs[i].operands[1].input)].min_value;
+                // new_columns[i].max_value = table_data.columns[table_data.column_indices.at(exprs[i].operands[1].input)].max_value;
             }
             else if (exprs[i].operands[0].exprType == ExprOption::COLUMN &&
                      exprs[i].operands[1].exprType == ExprOption::LITERAL)
@@ -514,8 +514,8 @@ void parse_project(const std::vector<ExprType> &exprs, TableData<int> &table_dat
                                   table_data.columns[table_data.column_indices.at(exprs[i].operands[0].input)].content,
                                   (int)exprs[i].operands[1].literal.value,
                                   table_data.flags, table_data.col_len, exprs[i].op, queue);
-                //new_columns[i].min_value = table_data.columns[table_data.column_indices.at(exprs[i].operands[0].input)].min_value;
-                //new_columns[i].max_value = table_data.columns[table_data.column_indices.at(exprs[i].operands[0].input)].max_value;
+                // new_columns[i].min_value = table_data.columns[table_data.column_indices.at(exprs[i].operands[0].input)].min_value;
+                // new_columns[i].max_value = table_data.columns[table_data.column_indices.at(exprs[i].operands[0].input)].max_value;
             }
             else
             {
@@ -576,7 +576,7 @@ void parse_aggregate(TableData<int> &table_data, const AggType &agg, const std::
     }
     else
     {
-        //ColumnData<int> *group_columns = new ColumnData<int>[group.size()];
+        // ColumnData<int> *group_columns = new ColumnData<int>[group.size()];
         ColumnData<int> *group_columns = sycl::malloc_shared<ColumnData<int>>(group.size(), queue);
         for (int i = 0; i < group.size(); i++)
             group_columns[i] = table_data.columns[table_data.column_indices.at(group[i])];
