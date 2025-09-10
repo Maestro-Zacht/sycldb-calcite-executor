@@ -9,10 +9,13 @@ inline T HASH(T X, T Y, T Z)
 template <typename T>
 void build_keys_ht(T col[], bool flags[], int col_len, bool ht[], T ht_len, T ht_min_value, sycl::queue &queue)
 {
-    // for (int i = 0; i < col_len; i++)
-    //     ht[HASH(col[i], ht_len, ht_min_value)] = flags[i];
-    queue.parallel_for(col_len, [=](sycl::id<1> i)
-                       { ht[HASH(col[i], ht_len, ht_min_value)] = flags[i]; });
+    queue.parallel_for(
+             col_len,
+             [=](sycl::id<1> i)
+             {
+                 ht[HASH(col[i], ht_len, ht_min_value)] = flags[i];
+             })
+        .wait();
 }
 
 void build_key_vals_ht(int col[], int agg_col[], bool flags[], int col_len, int ht[], int ht_len, int ht_min_value, sycl::queue &queue)
@@ -28,6 +31,20 @@ void build_key_vals_ht(int col[], int agg_col[], bool flags[], int col_len, int 
         else
             ht[HASH(col[i], ht_len, ht_min_value) << 1] = 0;
     }
+    // queue.parallel_for(
+    //          col_len,
+    //          [=](sycl::id<1> i)
+    //          {
+    //              if (flags[i])
+    //              {
+    //                  int hash = HASH(col[i], ht_len, ht_min_value);
+    //                  ht[hash << 1] = 1;
+    //                  ht[(hash << 1) + 1] = agg_col[i];
+    //              }
+    //              else
+    //                  ht[HASH(col[i], ht_len, ht_min_value) << 1] = 0;
+    //          })
+    //     .wait();
 }
 
 template <typename T>
@@ -44,7 +61,7 @@ void filter_join(T build_col[],
     // bool *ht = new bool[ht_len];
     // std::fill_n(ht, ht_len, false);
     bool *ht = sycl::malloc_shared<bool>(ht_len, queue);
-    queue.fill(ht, false, sizeof(bool) * ht_len).wait();
+    queue.fill(ht, false, ht_len).wait();
 
     build_keys_ht(build_col, build_flags, build_col_len, ht, ht_len, build_min_value, queue);
 

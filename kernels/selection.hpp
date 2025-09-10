@@ -89,12 +89,11 @@ void selection(bool flags[], T arr[], std::string op, T value, std::string paren
     comp_op comparison = get_comp_op(op);
     logical_op logic = get_logical_op(parent_op);
 
-    //for (int i = 0; i < col_len; i++)
-    //    flags[i] = logical(logic, flags[i], compare(comparison, arr[i], value));
+    // for (int i = 0; i < col_len; i++)
+    //     flags[i] = logical(logic, flags[i], compare(comparison, arr[i], value));
 
-    queue.parallel_for(col_len, [=](sycl::id<1> idx) {
-        flags[idx] = logical(logic, flags[idx], compare(comparison, arr[idx], value));
-    });
+    queue.parallel_for(col_len, [=](sycl::id<1> idx)
+                       { flags[idx] = logical(logic, flags[idx], compare(comparison, arr[idx], value)); });
     queue.wait();
 
     std::cout << "Running selection with comparison: " << op << " and parent op " << parent_op << std::endl;
@@ -106,13 +105,12 @@ void selection(bool flags[], T operand1[], std::string op, T operand2[], std::st
     comp_op comparison = get_comp_op(op);
     logical_op logic = get_logical_op(parent_op);
 
-    //for (int i = 0; i < col_len; i++)
-    //    flags[i] = logical(logic, flags[i], compare(comparison, operand1[i], operand2[i]));
+    // for (int i = 0; i < col_len; i++)
+    //     flags[i] = logical(logic, flags[i], compare(comparison, operand1[i], operand2[i]));
 
-    queue.parallel_for(col_len, [=](sycl::id<1> idx) {
-        flags[idx] = logical(logic, flags[idx], compare(comparison, operand1[idx], operand2[idx]));
-    });
+    queue.parallel_for(col_len, [=](sycl::id<1> idx)
+                       { flags[idx] = logical(logic, flags[idx], compare(comparison, operand1[idx], operand2[idx])); });
     queue.wait();
 
-    std::cout << "Running selection with comparison: " << op << " and parent op " << parent_op << std::endl;
+    // std::cout << "Running selection with comparison: " << op << " and parent op " << parent_op << std::endl;
 }

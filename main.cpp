@@ -534,6 +534,10 @@ void parse_project(const std::vector<ExprType> &exprs, TableData<int> &table_dat
     //     if (table_data.columns[i].has_ownership)
     //         delete[] table_data.columns[i].content;
     // delete[] table_data.columns;
+    // for (int i = 0; i < table_data.columns_size; i++)
+    //     if (table_data.columns[i].has_ownership)
+    //         sycl::free(table_data.columns[i].content, queue);
+    // delete[] table_data.columns;
 
     table_data.columns = new_columns;
     table_data.col_number = exprs.size();
@@ -553,12 +557,12 @@ void parse_aggregate(TableData<int> &table_data, const AggType &agg, const std::
         aggregate_operation(result, table_data.columns[table_data.column_indices.at(agg.operands[0])].content,
                             table_data.flags, table_data.col_len, agg.agg, queue);
         // Free old columns and replace with the result column
-        /*for (int i = 0; i < table_data.columns_size; i++)
-            if (table_data.columns[i].has_ownership)
-                delete[] table_data.columns[i].content;
-        delete[] table_data.columns;
-        delete[] table_data.flags;
-        table_data.column_indices.clear();*/
+        // for (int i = 0; i < table_data.columns_size; i++)
+        //     if (table_data.columns[i].has_ownership)
+        //         sycl::free(table_data.columns[i].content, queue);
+        // delete[] table_data.columns;
+        // sycl::free(table_data.flags, queue);
+        // table_data.column_indices.clear();
 
         table_data.columns = new ColumnData<int>[1];
         table_data.columns[0].content = new int[sizeof(unsigned long long) / sizeof(int)];
@@ -729,6 +733,8 @@ void execute_result(const PlanResult &result)
         current_table++;
     }
 
+    auto start = std::chrono::high_resolution_clock::now();
+
     for (int id : exec_info.dag_order)
     {
         const RelNode &rel = result.rels[id];
@@ -737,37 +743,66 @@ void execute_result(const PlanResult &result)
         case RelNodeType::TABLE_SCAN:
             break;
         case RelNodeType::FILTER:
-            // std::cout << "Filter condition: " << rel.condition << std::endl;
+        {
+            auto start_filter = std::chrono::high_resolution_clock::now();
             parse_filter(rel.condition, tables[output_table[rel.id - 1]], "", queue);
             output_table[rel.id] = output_table[rel.id - 1];
+            auto end_filter = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double, std::milli> filter_time = end_filter - start_filter;
+            std::cout << "Filter operation (" << filter_time.count() << " ms)" << std::endl;
             break;
+        }
         case RelNodeType::PROJECT:
-            std::cout << "Project operation" << std::endl;
+        {
+            auto start_project = std::chrono::high_resolution_clock::now();
             parse_project(rel.exprs, tables[output_table[rel.id - 1]], queue);
             output_table[rel.id] = output_table[rel.id - 1];
+            auto end_project = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double, std::milli> project_time = end_project - start_project;
+            std::cout << "Project operation (" << project_time.count() << " ms)" << std::endl;
             break;
+        }
         case RelNodeType::AGGREGATE:
-            std::cout << "Aggregate operation: " << rel.aggs[0].agg << std::endl;
+        {
+            auto start_aggregate = std::chrono::high_resolution_clock::now();
             parse_aggregate(tables[output_table[rel.id - 1]], rel.aggs[0], rel.group, queue);
             output_table[rel.id] = output_table[rel.id - 1];
+            auto end_aggregate = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double, std::milli> aggregate_time = end_aggregate - start_aggregate;
+            std::cout << "Aggregate operation (" << aggregate_time.count() << " ms)" << std::endl;
             break;
+        }
         case RelNodeType::JOIN:
-            std::cout << "Join operation" << std::endl;
+        {
+            auto start_join = std::chrono::high_resolution_clock::now();
             parse_join(rel, tables[output_table[rel.inputs[0]]], tables[output_table[rel.inputs[1]]], exec_info.table_last_used, queue);
             output_table[rel.id] = output_table[rel.inputs[0]];
+            auto end_join = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double, std::milli> join_time = end_join - start_join;
+            std::cout << "Join operation (" << join_time.count() << " ms)" << std::endl;
             break;
+        }
         case RelNodeType::SORT:
-            std::cout << "Sort operation" << std::endl;
+        {
+            auto start_sort = std::chrono::high_resolution_clock::now();
             parse_sort(rel, tables[output_table[rel.id - 1]]);
             output_table[rel.id] = output_table[rel.id - 1];
+            auto end_sort = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double, std::milli> sort_time = end_sort - start_sort;
+            std::cout << "Sort operation (" << sort_time.count() << " ms)" << std::endl;
             break;
+        }
         default:
             std::cout << "Unsupported RelNodeType: " << rel.relOp << std::endl;
             break;
         }
     }
 
-    print_result(tables[output_table[result.rels.size() - 1]]);
+    auto end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::milli> exec_time = end - start;
+    std::cout << "Execution time: " << exec_time.count() << " ms" << std::endl;
+
+    // print_result(tables[output_table[result.rels.size() - 1]]);
 
     /*for (int i = 0; i < current_table; i++)
     {
@@ -813,13 +848,13 @@ int main(int argc, char **argv)
 
     try
     {
-        std::cout << "SQL Query: " << sql << std::endl;
+        // std::cout << "SQL Query: " << sql << std::endl;
         transport->open();
         std::cout << "Transport opened successfully." << std::endl;
         PlanResult result;
         client.parse(result, sql);
 
-        std::cout << "Result: " << result << std::endl;
+        // std::cout << "Result: " << result << std::endl;
 
         execute_result(result);
 
