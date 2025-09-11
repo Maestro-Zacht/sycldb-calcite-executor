@@ -92,44 +92,50 @@ T *loadColumn(string table_name, int col_index, int &table_len, sycl::queue &que
 
 TableData<int> loadTable(std::string table_name, int col_number, const std::set<int> &columns, sycl::queue &queue)
 {
-
     TableData<int> res;
 
     res.col_number = col_number;
-    res.columns_size = col_number; // in dummy we load all columns
+    res.columns_size = columns.size();
     res.table_name = table_name;
 
-    res.columns = sycl::malloc_shared<ColumnData<int>>(col_number, queue);
+    res.columns = sycl::malloc_shared<ColumnData<int>>(res.columns_size, queue);
 
+    int i = 0;
     for (auto &col_idx : columns)
     {
-        res.column_indices[col_idx] = col_idx; // map the column index to itself
-        // res.columns[col_idx].content = loadColumn<int>(res.table_name, col_idx, res.col_len, queue);
+        res.column_indices[col_idx] = i; // map the column index to the actual position
+
         auto table_name = res.table_name;
         std::transform(table_name.begin(), table_name.end(), table_name.begin(), ::toupper);
         string col_name = table_name + std::to_string(col_idx);
         string filename = DATA_DIR + col_name;
         std::cout << "Loading column: " << filename << std::endl;
+
         ifstream colData(filename.c_str(), ios::in | ios::binary);
+
         colData.seekg(0, std::ios::end);
         std::streampos fileSize = colData.tellg();
         int num_entries = static_cast<int>(fileSize / sizeof(int));
+
         colData.seekg(0, std::ios::beg);
         int *h_col = sycl::malloc_host<int>(num_entries, queue);
         colData.read((char *)h_col, num_entries * sizeof(int));
-        res.columns[col_idx].content = sycl::malloc_shared<int>(num_entries, queue);
-        queue.memcpy(res.columns[col_idx].content, h_col, num_entries * sizeof(int)).wait();
+
+        res.columns[i].content = sycl::malloc_shared<int>(num_entries, queue);
+        queue.memcpy(res.columns[i].content, h_col, num_entries * sizeof(int)).wait();
         queue.wait();
+
         res.col_len = num_entries;
-        res.columns[col_idx].has_ownership = true;
-        res.columns[col_idx].is_aggregate_result = false;
-        // res.col_len = sizeof(res.columns[col_idx].content) / sizeof(int);
-        res.columns[col_idx].min_value = *std::min_element(h_col, h_col + res.col_len);
-        res.columns[col_idx].max_value = *std::max_element(h_col, h_col + res.col_len);
+        res.columns[i].has_ownership = true;
+        res.columns[i].is_aggregate_result = false;
+        res.columns[i].min_value = *std::min_element(h_col, h_col + res.col_len);
+        res.columns[i].max_value = *std::max_element(h_col, h_col + res.col_len);
         sycl::free(h_col, queue);
+
+        i++;
     }
 
-    std::cout << "Loaded table: " << res.table_name << " with " << res.col_len << " rows and " << res.col_number << " columns." << std::endl;
+    std::cout << "Loaded table: " << res.table_name << " with " << res.col_len << " rows and " << res.col_number << " columns (" << res.columns_size << " in memory)" << std::endl;
 
     bool *flags = sycl::malloc_host<bool>(res.col_len, queue);
     std::fill_n(flags, res.col_len, true);

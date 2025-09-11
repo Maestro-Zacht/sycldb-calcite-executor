@@ -702,8 +702,8 @@ void execute_result(const PlanResult &result)
     int current_table = 0,
         *output_table = sycl::malloc_shared<int>(result.rels.size(), queue); // used to track the output table of each operation, in order to be referenced in the joins. other operation types just use the previous output table
     ExecutionInfo exec_info = parse_execution_info(result);
-    std::vector<void *> resources;          // used to track allocated resources for freeing at the end
-    resources.reserve(17 + 9 + 8 + 7 + 17); // total number of columns (may be more or less than needed)
+    std::vector<void *> resources; // used to track allocated resources for freeing at the end
+    resources.reserve(100);        // high enough to avoid multiple reallocations
 
     for (const RelNode &rel : result.rels)
     {
@@ -792,9 +792,12 @@ void execute_result(const PlanResult &result)
 
     auto end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double, std::milli> exec_time = end - start;
-    std::cout << "Execution time: " << exec_time.count() << " ms" << std::endl;
 
     // print_result(tables[output_table[result.rels.size() - 1]]);
+
+    std::cout << "Execution time: " << exec_time.count() << " ms" << std::endl;
+
+    start = std::chrono::high_resolution_clock::now();
 
     for (int i = 0; i < current_table; i++)
     {
@@ -808,6 +811,10 @@ void execute_result(const PlanResult &result)
 
     for (void *res : resources)
         sycl::free(res, queue);
+
+    end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::milli> free_time = end - start;
+    std::cout << "Free resources time: " << free_time.count() << " ms" << std::endl;
 }
 
 int main(int argc, char **argv)
