@@ -441,7 +441,7 @@ void parse_filter(const ExprType &expr,
     }
 }
 
-void parse_project(const std::vector<ExprType> &exprs, TableData<int> &table_data, sycl::queue &queue)
+void parse_project(const std::vector<ExprType> &exprs, TableData<int> &table_data, sycl::queue &queue, std::vector<void *> &resources)
 {
     ColumnData<int> *new_columns = sycl::malloc_shared<ColumnData<int>>(exprs.size(), queue);
 
@@ -526,14 +526,10 @@ void parse_project(const std::vector<ExprType> &exprs, TableData<int> &table_dat
     }
 
     // Free old columns and replace with new ones
-    // for (int i = 0; i < table_data.columns_size; i++)
-    //     if (table_data.columns[i].has_ownership)
-    //         delete[] table_data.columns[i].content;
-    // delete[] table_data.columns;
-    // for (int i = 0; i < table_data.columns_size; i++)
-    //     if (table_data.columns[i].has_ownership)
-    //         sycl::free(table_data.columns[i].content, queue);
-    // delete[] table_data.columns;
+    for (int i = 0; i < table_data.columns_size; i++)
+        if (table_data.columns[i].has_ownership)
+            resources.push_back(table_data.columns[i].content);
+    resources.push_back(table_data.columns);
 
     table_data.columns = new_columns;
     table_data.col_number = exprs.size();
@@ -545,7 +541,7 @@ void parse_project(const std::vector<ExprType> &exprs, TableData<int> &table_dat
         table_data.column_indices[i] = i;
 }
 
-void parse_aggregate(TableData<int> &table_data, const AggType &agg, const std::vector<long> &group, sycl::queue &queue)
+void parse_aggregate(TableData<int> &table_data, const AggType &agg, const std::vector<long> &group, sycl::queue &queue, std::vector<void *> &resources)
 {
     if (group.size() == 0)
     {
@@ -553,12 +549,12 @@ void parse_aggregate(TableData<int> &table_data, const AggType &agg, const std::
         aggregate_operation(result, table_data.columns[table_data.column_indices.at(agg.operands[0])].content,
                             table_data.flags, table_data.col_len, agg.agg, queue);
         // Free old columns and replace with the result column
-        // for (int i = 0; i < table_data.columns_size; i++)
-        //     if (table_data.columns[i].has_ownership)
-        //         sycl::free(table_data.columns[i].content, queue);
-        // delete[] table_data.columns;
-        // sycl::free(table_data.flags, queue);
-        // table_data.column_indices.clear();
+        for (int i = 0; i < table_data.columns_size; i++)
+            if (table_data.columns[i].has_ownership)
+                resources.push_back(table_data.columns[i].content);
+        resources.push_back(table_data.columns);
+        resources.push_back(table_data.flags);
+        table_data.column_indices.clear();
 
         table_data.columns = sycl::malloc_shared<ColumnData<int>>(1, queue);
         table_data.columns[0].content = sycl::malloc_shared<int>(sizeof(unsigned long long) / sizeof(int), queue);
@@ -583,15 +579,14 @@ void parse_aggregate(TableData<int> &table_data, const AggType &agg, const std::
             group_columns,
             table_data.columns[table_data.column_indices.at(agg.operands[0])].content,
             table_data.flags, group.size(), table_data.col_len, agg.agg, queue);
-        sycl::free(group_columns, queue);
+        resources.push_back(group_columns);
 
         // Free old columns and replace with the result columns
-        /*for (int i = 0; i < table_data.columns_size; i++)
+        for (int i = 0; i < table_data.columns_size; i++)
             if (table_data.columns[i].has_ownership)
-                delete[] table_data.columns[i].content;
-        delete[] table_data.columns;
-        delete[] table_data.flags;
-        */
+                resources.push_back(table_data.columns[i].content);
+        resources.push_back(table_data.columns);
+        resources.push_back(table_data.flags);
         table_data.column_indices.clear();
 
         table_data.columns = sycl::malloc_shared<ColumnData<int>>(group.size() + 1, queue);
@@ -622,7 +617,7 @@ void parse_aggregate(TableData<int> &table_data, const AggType &agg, const std::
         table_data.flags = std::get<2>(agg_res);
         table_data.column_indices[group.size()] = group.size();
 
-        sycl::free(std::get<0>(agg_res), queue);
+        resources.push_back(std::get<0>(agg_res));
     }
 }
 
@@ -707,6 +702,8 @@ void execute_result(const PlanResult &result)
     int current_table = 0,
         *output_table = sycl::malloc_shared<int>(result.rels.size(), queue); // used to track the output table of each operation, in order to be referenced in the joins. other operation types just use the previous output table
     ExecutionInfo exec_info = parse_execution_info(result);
+    std::vector<void *> resources;          // used to track allocated resources for freeing at the end
+    resources.reserve(17 + 9 + 8 + 7 + 17); // total number of columns (may be more or less than needed)
 
     for (const RelNode &rel : result.rels)
     {
@@ -750,7 +747,7 @@ void execute_result(const PlanResult &result)
         case RelNodeType::PROJECT:
         {
             auto start_project = std::chrono::high_resolution_clock::now();
-            parse_project(rel.exprs, tables[output_table[rel.id - 1]], queue);
+            parse_project(rel.exprs, tables[output_table[rel.id - 1]], queue, resources);
             output_table[rel.id] = output_table[rel.id - 1];
             auto end_project = std::chrono::high_resolution_clock::now();
             std::chrono::duration<double, std::milli> project_time = end_project - start_project;
@@ -760,7 +757,7 @@ void execute_result(const PlanResult &result)
         case RelNodeType::AGGREGATE:
         {
             auto start_aggregate = std::chrono::high_resolution_clock::now();
-            parse_aggregate(tables[output_table[rel.id - 1]], rel.aggs[0], rel.group, queue);
+            parse_aggregate(tables[output_table[rel.id - 1]], rel.aggs[0], rel.group, queue, resources);
             output_table[rel.id] = output_table[rel.id - 1];
             auto end_aggregate = std::chrono::high_resolution_clock::now();
             std::chrono::duration<double, std::milli> aggregate_time = end_aggregate - start_aggregate;
@@ -799,15 +796,18 @@ void execute_result(const PlanResult &result)
 
     // print_result(tables[output_table[result.rels.size() - 1]]);
 
-    /*for (int i = 0; i < current_table; i++)
+    for (int i = 0; i < current_table; i++)
     {
-        delete[] tables[i].flags;
+        sycl::free(tables[i].flags, queue);
         for (int j = 0; j < tables[i].columns_size; j++)
             if (tables[i].columns[j].has_ownership)
-                delete[] tables[i].columns[j].content;
-        delete[] tables[i].columns;
+                sycl::free(tables[i].columns[j].content, queue);
+        sycl::free(tables[i].columns, queue);
     }
-    delete[] output_table;*/
+    sycl::free(output_table, queue);
+
+    for (void *res : resources)
+        sycl::free(res, queue);
 }
 
 int main(int argc, char **argv)
