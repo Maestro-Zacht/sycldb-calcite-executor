@@ -119,43 +119,111 @@ std::tuple<int *, unsigned long long, bool *> group_by_aggregate(ColumnData<int>
     bool *res_flags = sycl::malloc_shared<bool>(prod_ranges, queue);
     queue.fill(res_flags, false, prod_ranges).wait();
 
-    // for (int i = 0; i < col_len; i++)
+    // queue.submit(
+    //          [&](sycl::handler &cgh)
+    //          {
+    //              auto out = sycl::stream(1024, 768, cgh);
+
+    //              cgh.parallel_for(
+    //                  col_len,
+    //                  [=](sycl::id<1> i)
+    //                  {
+    //                      if (flags[i])
+    //                      {
+    //                          out << "Processing row " << i << sycl::endl;
+    //                          int hash = 0, mult = 1;
+    //                          for (int j = 0; j < col_num; j++)
+    //                          {
+    //                              hash += (group_columns[j].content[i] - min_values[j]) * mult;
+    //                              mult *= max_values[j] - min_values[j] + 1;
+    //                          }
+    //                          hash %= prod_ranges;
+
+    //                          out << "Computed hash in row " << i << sycl::endl;
+
+    //                          res_flags[hash] = true;
+    //                          for (int j = 0; j < col_num; j++)
+    //                              results[j * prod_ranges + hash] = group_columns[j].content[i];
+
+    //                          out << "Stored group columns in row " << i << sycl::endl;
+    //                          // if (agg_op == "SUM")
+    //                          auto sum_obj = sycl::atomic_ref<uint64_t, sycl::memory_order::relaxed,
+    //                                                          sycl::memory_scope::device,
+    //                                                          sycl::access::address_space::global_space>(
+    //                              ((uint64_t *)(&results[col_num * prod_ranges]))[hash]);
+    //                          sum_obj.fetch_add(agg_column[i]);
+
+    //                          out << "Updated aggregate in row " << i << sycl::endl;
+    //                      }
+    //                  });
+    //          })
+    //     .wait();
+
     queue.parallel_for(
-        col_len,
-        [=](sycl::id<1> i)
-        {
-            if (flags[i])
-            {
-                int hash = 0, mult = 1;
-                for (int j = 0; j < col_num; j++)
-                {
-                    hash += (group_columns[j].content[i] - min_values[j]) * mult;
-                    mult *= max_values[j] - min_values[j] + 1;
-                }
-                hash %= prod_ranges;
+             col_len,
+             [=](sycl::id<1> idx)
+             {
+                 auto i = idx[0];
+                 if (flags[i])
+                 {
+                     int hash = 0, mult = 1;
+                     for (int j = 0; j < col_num; j++)
+                     {
+                         hash += (group_columns[j].content[i] - min_values[j]) * mult;
+                         mult *= max_values[j] - min_values[j] + 1;
+                     }
+                     hash %= prod_ranges;
 
-                res_flags[hash] = true;
-                for (int j = 0; j < col_num; j++)
-                    results[j * prod_ranges + hash] = group_columns[j].content[i];
+                     res_flags[hash] = true;
+                     for (int j = 0; j < col_num; j++)
+                         results[j * prod_ranges + hash] = group_columns[j].content[i];
 
-                // if (agg_op == "SUM")
-                auto sum_obj = sycl::atomic_ref<uint64_t, sycl::memory_order::relaxed,
-                                                sycl::memory_scope::device,
-                                                sycl::access::address_space::global_space>(
-                    ((uint64_t *)(&results[col_num * prod_ranges]))[hash]);
-                sum_obj.fetch_add((uint64_t)agg_column[i]);
-            }
-        });
-    queue.wait();
+                     // if (agg_op == "SUM")
+                     auto sum_obj = sycl::atomic_ref<uint64_t, sycl::memory_order::relaxed,
+                                                     sycl::memory_scope::device,
+                                                     sycl::access::address_space::global_space>(
+                         ((uint64_t *)(&results[col_num * prod_ranges]))[hash]);
+                     sum_obj.fetch_add(agg_column[i]);
+                 }
+             })
+        .wait();
+    // for (int i = 0; i < col_len; i++)
+    // {
+    //     if (flags[i])
+    //     {
+    //         unsigned hash = 0, mult = 1;
+    //         for (int j = 0; j < col_num; j++)
+    //         {
+    //             if (group_columns[j].content[i] < min_values[j] || group_columns[j].content[i] > max_values[j] || max_values[j] < min_values[j])
+    //             {
+    //                 std::cerr << "SCREAM " << j << std::endl;
+    //             }
+    //             hash += (group_columns[j].content[i] - min_values[j]) * mult;
+    //             mult *= max_values[j] - min_values[j] + 1;
+    //         }
+    //         hash %= prod_ranges;
 
-    int *h_results = sycl::malloc_shared<int>((col_num + (sizeof(uint64_t) / sizeof(int))) * prod_ranges, queue);
-    bool *h_res_flags = sycl::malloc_shared<bool>(prod_ranges, queue);
-    queue.memcpy(h_results, results, sizeof(int) * (col_num + (sizeof(uint64_t) / sizeof(int))) * prod_ranges).wait();
-    queue.memcpy(h_res_flags, res_flags, sizeof(bool) * prod_ranges).wait();
-    sycl::free(results, queue);
-    sycl::free(res_flags, queue);
+    //         res_flags[hash] = true;
+    //         for (int j = 0; j < col_num; j++)
+    //             results[j * prod_ranges + hash] = group_columns[j].content[i];
+
+    //         if (agg_op == "SUM")
+    //             ((uint64_t *)(&results[col_num * prod_ranges]))[hash] += agg_column[i];
+    //         else
+    //         {
+    //             // std::cout << "Unsupported aggregate operation: " << agg_op << std::endl;
+    //         }
+    //     }
+    // }
+
+    // int *h_results = sycl::malloc_shared<int>((col_num + (sizeof(uint64_t) / sizeof(int))) * prod_ranges, queue);
+    // bool *h_res_flags = sycl::malloc_shared<bool>(prod_ranges, queue);
+    // queue.memcpy(h_results, results, sizeof(int) * (col_num + (sizeof(uint64_t) / sizeof(int))) * prod_ranges).wait();
+    // queue.memcpy(h_res_flags, res_flags, sizeof(bool) * prod_ranges).wait();
+    // sycl::free(results, queue);
+    // sycl::free(res_flags, queue);
 
     sycl::free(max_values, queue);
     sycl::free(min_values, queue);
-    return std::make_tuple(h_results, prod_ranges, h_res_flags);
+    return std::make_tuple(results, prod_ranges, res_flags);
 }

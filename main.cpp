@@ -451,11 +451,8 @@ void parse_project(const std::vector<ExprType> &exprs, TableData<int> &table_dat
         {
         case ExprOption::COLUMN:
             // Copy the column data from the original table and pass ownership
-            new_columns[i].content = table_data.columns[table_data.column_indices.at(exprs[i].input)].content;
-            new_columns[i].min_value = table_data.columns[table_data.column_indices.at(exprs[i].input)].min_value;
-            new_columns[i].max_value = table_data.columns[table_data.column_indices.at(exprs[i].input)].max_value;
-            new_columns[i].has_ownership = true;
-            new_columns[i].is_aggregate_result = table_data.columns[table_data.column_indices.at(exprs[i].input)].is_aggregate_result;
+            new_columns[i] = table_data.columns[table_data.column_indices.at(exprs[i].input)];
+
             table_data.columns[table_data.column_indices.at(exprs[i].input)].has_ownership = false;
             if (exprs[i].input == table_data.group_by_column)
                 table_data.group_by_column = i; // update group by column index
@@ -463,7 +460,7 @@ void parse_project(const std::vector<ExprType> &exprs, TableData<int> &table_dat
         case ExprOption::LITERAL:
             // create a new column with the literal value
             new_columns[i].content = sycl::malloc_shared<int>(table_data.col_len, queue); // device
-            queue.fill(new_columns[i].content, exprs[i].literal.value, table_data.col_len);
+            queue.fill(new_columns[i].content, exprs[i].literal.value, table_data.col_len).wait();
             new_columns[i].min_value = exprs[i].literal.value;
             new_columns[i].max_value = exprs[i].literal.value;
             new_columns[i].has_ownership = true;

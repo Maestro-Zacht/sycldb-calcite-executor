@@ -58,7 +58,9 @@ void filter_join(T build_col[],
              [=](sycl::id<1> idx)
              {
                  auto i = idx[0];
-                 if (probe_col_flags[i])
+                 if (probe_col_flags[i] &&
+                     probe_col[i] >= build_min_value &&
+                     probe_col[i] <= build_max_value)
                      probe_col_flags[i] = ht[HASH(probe_col[i], ht_len, build_min_value)];
              })
         .wait();
