@@ -114,13 +114,10 @@ std::tuple<int *, unsigned long long, bool *> group_by_aggregate(ColumnData<int>
         prod_ranges *= max_values[i] - min_values[i] + 1;
     }
 
-    // int *results = new int[(col_num + (sizeof(uint64_t) / sizeof(int))) * prod_ranges];
-    // std::fill_n(results, (col_num + (sizeof(uint64_t) / sizeof(int))) * prod_ranges, 0);
-    // bool *res_flags = new bool[prod_ranges]();
     int *results = sycl::malloc_shared<int>((col_num + (sizeof(uint64_t) / sizeof(int))) * prod_ranges, queue);
     queue.fill(results, 0, (col_num + (sizeof(uint64_t) / sizeof(int))) * prod_ranges).wait();
     bool *res_flags = sycl::malloc_shared<bool>(prod_ranges, queue);
-    queue.fill(res_flags, 0, prod_ranges).wait();
+    queue.fill(res_flags, false, prod_ranges).wait();
 
     // for (int i = 0; i < col_len; i++)
     queue.parallel_for(
@@ -151,15 +148,13 @@ std::tuple<int *, unsigned long long, bool *> group_by_aggregate(ColumnData<int>
         });
     queue.wait();
 
-    int *h_results = new int[(col_num + (sizeof(uint64_t) / sizeof(int))) * prod_ranges];
-    bool *h_res_flags = new bool[prod_ranges];
+    int *h_results = sycl::malloc_shared<int>((col_num + (sizeof(uint64_t) / sizeof(int))) * prod_ranges, queue);
+    bool *h_res_flags = sycl::malloc_shared<bool>(prod_ranges, queue);
     queue.memcpy(h_results, results, sizeof(int) * (col_num + (sizeof(uint64_t) / sizeof(int))) * prod_ranges).wait();
     queue.memcpy(h_res_flags, res_flags, sizeof(bool) * prod_ranges).wait();
     sycl::free(results, queue);
     sycl::free(res_flags, queue);
 
-    // delete[] max_values;
-    // delete[] min_values;
     sycl::free(max_values, queue);
     sycl::free(min_values, queue);
     return std::make_tuple(h_results, prod_ranges, h_res_flags);

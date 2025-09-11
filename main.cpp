@@ -347,7 +347,7 @@ void parse_filter(const ExprType &expr,
     if (expr.op == "SEARCH")
     {
         int col_index = table_data.column_indices.at(expr.operands[0].input);
-        bool *local_flags = sycl::malloc_shared<bool>(table_data.col_len, queue);
+        bool *local_flags = sycl::malloc_device<bool>(table_data.col_len, queue);
 
         if (expr.operands[1].literal.rangeSet.size() == 1) // range
         {
@@ -360,11 +360,6 @@ void parse_filter(const ExprType &expr,
             selection(local_flags,
                       table_data.columns[col_index].content,
                       "<=", upper, "AND", table_data.col_len, queue);
-
-            for (int i = 0; i < table_data.col_len; i++)
-                table_data.flags[i] = logical(
-                    get_logical_op(parent_op),
-                    table_data.flags[i], local_flags[i]);
         }
         else // or between two values
         {
@@ -377,12 +372,16 @@ void parse_filter(const ExprType &expr,
             selection(local_flags,
                       table_data.columns[col_index].content,
                       "==", second, "OR", table_data.col_len, queue);
-
-            for (int i = 0; i < table_data.col_len; i++)
-                table_data.flags[i] = logical(
-                    get_logical_op(parent_op),
-                    table_data.flags[i], local_flags[i]);
         }
+        bool *flags = table_data.flags;
+        logical_op logic = get_logical_op(parent_op);
+        queue.parallel_for(
+                 table_data.col_len,
+                 [=](sycl::id<1> idx)
+                 {
+                     flags[idx[0]] = logical(logic, flags[idx[0]], local_flags[idx[0]]);
+                 })
+            .wait();
         sycl::free(local_flags, queue);
     }
     else if (is_filter_logical(expr.op))
@@ -444,7 +443,7 @@ void parse_filter(const ExprType &expr,
 
 void parse_project(const std::vector<ExprType> &exprs, TableData<int> &table_data, sycl::queue &queue)
 {
-    ColumnData<int> *new_columns = new ColumnData<int>[exprs.size()];
+    ColumnData<int> *new_columns = sycl::malloc_shared<ColumnData<int>>(exprs.size(), queue);
 
     for (size_t i = 0; i < exprs.size(); i++)
     {
@@ -564,8 +563,8 @@ void parse_aggregate(TableData<int> &table_data, const AggType &agg, const std::
         // sycl::free(table_data.flags, queue);
         // table_data.column_indices.clear();
 
-        table_data.columns = new ColumnData<int>[1];
-        table_data.columns[0].content = new int[sizeof(unsigned long long) / sizeof(int)];
+        table_data.columns = sycl::malloc_shared<ColumnData<int>>(1, queue);
+        table_data.columns[0].content = sycl::malloc_shared<int>(sizeof(unsigned long long) / sizeof(int), queue);
         ((unsigned long long *)table_data.columns[0].content)[0] = result;
         table_data.columns[0].has_ownership = true;
         table_data.columns[0].is_aggregate_result = true;
@@ -580,7 +579,6 @@ void parse_aggregate(TableData<int> &table_data, const AggType &agg, const std::
     }
     else
     {
-        // ColumnData<int> *group_columns = new ColumnData<int>[group.size()];
         ColumnData<int> *group_columns = sycl::malloc_shared<ColumnData<int>>(group.size(), queue);
         for (int i = 0; i < group.size(); i++)
             group_columns[i] = table_data.columns[table_data.column_indices.at(group[i])];
@@ -599,10 +597,10 @@ void parse_aggregate(TableData<int> &table_data, const AggType &agg, const std::
         */
         table_data.column_indices.clear();
 
-        table_data.columns = new ColumnData<int>[group.size() + 1];
+        table_data.columns = sycl::malloc_shared<ColumnData<int>>(group.size() + 1, queue);
         for (int i = 0; i < group.size(); i++)
         {
-            table_data.columns[i].content = new int[std::get<1>(agg_res)];
+            table_data.columns[i].content = sycl::malloc_shared<int>(std::get<1>(agg_res), queue);
             std::memcpy(table_data.columns[i].content,
                         std::get<0>(agg_res) + i * std::get<1>(agg_res),
                         std::get<1>(agg_res) * sizeof(int));
@@ -613,7 +611,7 @@ void parse_aggregate(TableData<int> &table_data, const AggType &agg, const std::
             table_data.column_indices[i] = i;
         }
 
-        table_data.columns[group.size()].content = (int *)new uint64_t[std::get<1>(agg_res)];
+        table_data.columns[group.size()].content = sycl::malloc_shared<int>(std::get<1>(agg_res) * (sizeof(uint64_t) / sizeof(int)), queue);
         std::memcpy(table_data.columns[group.size()].content,
                     std::get<0>(agg_res) + group.size() * std::get<1>(agg_res),
                     std::get<1>(agg_res) * sizeof(uint64_t));
@@ -627,7 +625,7 @@ void parse_aggregate(TableData<int> &table_data, const AggType &agg, const std::
         table_data.flags = std::get<2>(agg_res);
         table_data.column_indices[group.size()] = group.size();
 
-        delete[] std::get<0>(agg_res);
+        sycl::free(std::get<0>(agg_res), queue);
     }
 }
 
@@ -666,13 +664,13 @@ void parse_join(const RelNode &rel, TableData<int> &left_table, TableData<int> &
     left_table.col_number += right_table.col_number;
 }
 
-void parse_sort(const RelNode &rel, TableData<int> &table_data)
+void parse_sort(const RelNode &rel, TableData<int> &table_data, sycl::queue &queue)
 {
     if (rel.collation.size() == 0)
         return;
 
-    int *sort_columns = new int[rel.collation.size()];
-    bool *sort_orders = new bool[rel.collation.size()];
+    int *sort_columns = sycl::malloc_host<int>(rel.collation.size(), queue);
+    bool *sort_orders = sycl::malloc_host<bool>(rel.collation.size(), queue);
 
     for (int i = 0; i < rel.collation.size(); i++)
     {
@@ -680,10 +678,10 @@ void parse_sort(const RelNode &rel, TableData<int> &table_data)
         sort_orders[i] = rel.collation[i].direction == DirectionOption::ASCENDING;
     }
 
-    sort_table(table_data, sort_columns, sort_orders, rel.collation.size());
+    sort_table(table_data, sort_columns, sort_orders, rel.collation.size(), queue);
 
-    delete[] sort_columns;
-    delete[] sort_orders;
+    sycl::free(sort_columns, queue);
+    sycl::free(sort_orders, queue);
 }
 
 void print_result(const TableData<int> &table_data)
@@ -785,7 +783,7 @@ void execute_result(const PlanResult &result)
         case RelNodeType::SORT:
         {
             auto start_sort = std::chrono::high_resolution_clock::now();
-            parse_sort(rel, tables[output_table[rel.id - 1]]);
+            parse_sort(rel, tables[output_table[rel.id - 1]], queue);
             output_table[rel.id] = output_table[rel.id - 1];
             auto end_sort = std::chrono::high_resolution_clock::now();
             std::chrono::duration<double, std::milli> sort_time = end_sort - start_sort;
@@ -856,6 +854,7 @@ int main(int argc, char **argv)
 
         // std::cout << "Result: " << result << std::endl;
 
+        execute_result(result);
         execute_result(result);
 
         // client.shutdown();

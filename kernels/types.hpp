@@ -99,12 +99,12 @@ TableData<int> loadTable(std::string table_name, int col_number, const std::set<
     res.columns_size = col_number; // in dummy we load all columns
     res.table_name = table_name;
 
-    res.columns = new ColumnData<int>[col_number];
+    res.columns = sycl::malloc_shared<ColumnData<int>>(col_number, queue);
 
     for (auto &col_idx : columns)
     {
         res.column_indices[col_idx] = col_idx; // map the column index to itself
-        //res.columns[col_idx].content = loadColumn<int>(res.table_name, col_idx, res.col_len, queue);
+        // res.columns[col_idx].content = loadColumn<int>(res.table_name, col_idx, res.col_len, queue);
         auto table_name = res.table_name;
         std::transform(table_name.begin(), table_name.end(), table_name.begin(), ::toupper);
         string col_name = table_name + std::to_string(col_idx);
@@ -123,7 +123,7 @@ TableData<int> loadTable(std::string table_name, int col_number, const std::set<
         res.col_len = num_entries;
         res.columns[col_idx].has_ownership = true;
         res.columns[col_idx].is_aggregate_result = false;
-        //res.col_len = sizeof(res.columns[col_idx].content) / sizeof(int);
+        // res.col_len = sizeof(res.columns[col_idx].content) / sizeof(int);
         res.columns[col_idx].min_value = *std::min_element(h_col, h_col + res.col_len);
         res.columns[col_idx].max_value = *std::max_element(h_col, h_col + res.col_len);
         sycl::free(h_col, queue);
