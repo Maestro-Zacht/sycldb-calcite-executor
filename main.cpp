@@ -687,7 +687,7 @@ void print_result(const TableData<int> &table_data)
         if (table_data.flags[i])
         {
             for (int j = 0; j < table_data.columns_size; j++) // at this point column_size should match col_number
-                std::cout << ((table_data.columns[j].is_aggregate_result) ? ((unsigned long long *)table_data.columns[j].content)[i] : table_data.columns[j].content[i]) << " ";
+                std::cout << ((table_data.columns[j].is_aggregate_result) ? ((unsigned long long *)table_data.columns[j].content)[i] : table_data.columns[j].content[i]) << ((j < table_data.columns_size - 1) ? " " : "");
             std::cout << std::endl;
             res_count++;
         }
@@ -696,7 +696,34 @@ void print_result(const TableData<int> &table_data)
     std::cout << "Total rows in result: " << res_count << std::endl;
 }
 
-void execute_result(const PlanResult &result)
+void save_result(const TableData<int> &table_data, const std::string &data_path)
+{
+    std::string query_name = data_path.substr(data_path.find_last_of("/") + 1, 3);
+    std::cout << "Saving result to " << query_name << ".res" << std::endl;
+
+    std::ofstream outfile(query_name + ".res");
+    if (!outfile.is_open())
+    {
+        std::cerr << "Could not open result file for writing." << std::endl;
+        return;
+    }
+
+    for (int i = 0; i < table_data.col_len; i++)
+    {
+        if (table_data.flags[i])
+        {
+            for (int j = 0; j < table_data.columns_size; j++) // at this point column_size should match col_number
+                outfile << ((table_data.columns[j].is_aggregate_result) ? ((unsigned long long *)table_data.columns[j].content)[i] : table_data.columns[j].content[i]) << ((j < table_data.columns_size - 1) ? " " : "");
+
+            if (i < table_data.col_len - 1)
+                outfile << "\n";
+        }
+    }
+
+    outfile.close();
+}
+
+void execute_result(const PlanResult &result, const std::string &data_path)
 {
     sycl::queue queue{sycl::gpu_selector_v, sycl::property::queue::in_order()};
     std::cout << "Running on: " << queue.get_device().get_info<sycl::info::device::name>() << std::endl;
@@ -796,6 +823,7 @@ void execute_result(const PlanResult &result)
     std::chrono::duration<double, std::milli> exec_time = end - start;
 
     // print_result(tables[output_table[result.rels.size() - 1]]);
+    save_result(tables[output_table[result.rels.size() - 1]], data_path);
 
     std::cout << "Execution time: " << exec_time.count() << " ms" << std::endl;
 
@@ -860,8 +888,8 @@ int main(int argc, char **argv)
 
         // std::cout << "Result: " << result << std::endl;
 
-        execute_result(result);
-        execute_result(result);
+        execute_result(result, argv[1]);
+        execute_result(result, argv[1]);
 
         // client.shutdown();
 
