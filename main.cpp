@@ -889,7 +889,7 @@ int main(int argc, char **argv)
         // std::cout << "Result: " << result << std::endl;
 
         execute_result(result, argv[1]);
-        execute_result(result, argv[1]);
+        // execute_result(result, argv[1]);
 
         // client.shutdown();
 
