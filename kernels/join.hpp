@@ -75,6 +75,7 @@ void full_join(TableData<int> &probe_table,
 {
     int build_column = build_table.column_indices.at(build_col_index),
         probe_column = probe_table.column_indices.at(probe_col_index),
+        group_by_column = build_table.column_indices.at(build_table.group_by_column),
         ht_len = build_table.columns[build_column].max_value -
                  build_table.columns[build_column].min_value + 1,
         *ht = sycl::malloc_shared<int>(ht_len * 2, queue);
@@ -83,7 +84,7 @@ void full_join(TableData<int> &probe_table,
 
     build_key_vals_ht(
         build_table.columns[build_column].content,
-        build_table.columns[build_table.column_indices.at(build_table.group_by_column)].content,
+        build_table.columns[group_by_column].content,
         build_table.flags, build_table.col_len, ht, ht_len,
         build_table.columns[build_column].min_value, queue);
 
@@ -116,8 +117,8 @@ void full_join(TableData<int> &probe_table,
     probe_table.column_indices[probe_table.col_number + build_table.group_by_column] = probe_column;
 
     // update min and max values of the probe column
-    probe_table.columns[probe_column].min_value = build_table.columns[build_table.group_by_column].min_value;
-    probe_table.columns[probe_column].max_value = build_table.columns[build_table.group_by_column].max_value;
+    probe_table.columns[probe_column].min_value = build_table.columns[group_by_column].min_value;
+    probe_table.columns[probe_column].max_value = build_table.columns[group_by_column].max_value;
 
     sycl::free(ht, queue);
 }

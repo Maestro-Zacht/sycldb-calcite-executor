@@ -360,6 +360,9 @@ void parse_filter(const ExprType &expr,
             selection(local_flags,
                       table_data.columns[col_index].content,
                       "<=", upper, "AND", table_data.col_len, queue);
+
+            table_data.columns[col_index].min_value = lower;
+            table_data.columns[col_index].max_value = upper;
         }
         else // or between two values
         {
@@ -611,11 +614,12 @@ void parse_aggregate(TableData<int> &table_data, const AggType &agg, const std::
         table_data.columns[group.size()].is_aggregate_result = true;
         table_data.columns[group.size()].min_value = 0; // TODO: set real min value
         table_data.columns[group.size()].max_value = 0; // TODO: set real max value
+        table_data.column_indices[group.size()] = group.size();
+
         table_data.col_number = group.size() + 1;
         table_data.columns_size = group.size() + 1;
         table_data.col_len = std::get<1>(agg_res);
         table_data.flags = std::get<2>(agg_res);
-        table_data.column_indices[group.size()] = group.size();
 
         resources.push_back(std::get<0>(agg_res));
     }
