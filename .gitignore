@@ -36,4 +36,3 @@ client
 
 # Temporary files
 *.res
-!reference_result/*.res

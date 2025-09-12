@@ -7,7 +7,7 @@ TARGET := client
 
 QUERIES := $(wildcard ./queries/transformed/q*.sql)
 QUERY_NAMES := $(patsubst %.sql, %, $(notdir $(QUERIES)))
-RESULT_FILES = $(notdir $(wildcard ./q*.res))
+RESULT_FILES = $(patsubst %.res, %, $(notdir $(wildcard ./q*.res)))
 
 .PHONY: clean check fullcheck q%
 
@@ -23,8 +23,10 @@ clean:
 	-rm q*.res
 
 check:
+	@echo "========== Checking results... =========="
 	@for q in $(RESULT_FILES); do \
-		diff -q ./reference_result/$$q ./$$q; \
+		diff -q ./reference_result/$$q.txt ./$$q.res; \
+		echo "checked $$q"; \
 	done
 
 fullcheck: $(QUERY_NAMES) check

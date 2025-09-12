@@ -688,7 +688,7 @@ void print_result(const TableData<int> &table_data)
         {
             for (int j = 0; j < table_data.columns_size; j++) // at this point column_size should match col_number
                 std::cout << ((table_data.columns[j].is_aggregate_result) ? ((unsigned long long *)table_data.columns[j].content)[i] : table_data.columns[j].content[i]) << ((j < table_data.columns_size - 1) ? " " : "");
-            std::cout << std::endl;
+            std::cout << "\n";
             res_count++;
         }
     }
@@ -714,9 +714,7 @@ void save_result(const TableData<int> &table_data, const std::string &data_path)
         {
             for (int j = 0; j < table_data.columns_size; j++) // at this point column_size should match col_number
                 outfile << ((table_data.columns[j].is_aggregate_result) ? ((unsigned long long *)table_data.columns[j].content)[i] : table_data.columns[j].content[i]) << ((j < table_data.columns_size - 1) ? " " : "");
-
-            if (i < table_data.col_len - 1)
-                outfile << "\n";
+            outfile << "\n";
         }
     }
 
