@@ -101,7 +101,7 @@ void aggregate_operation(U &result, const T a[], bool flags[], int size, const s
     return result;
 }*/
 
-std::tuple<int *, unsigned long long, bool *> group_by_aggregate(ColumnData<int> *group_columns, int *agg_column, bool *flags, int col_num, int col_len, const std::string &agg_op, sycl::queue &queue)
+std::tuple<int *, unsigned long long, bool *, uint64_t *> group_by_aggregate(ColumnData<int> *group_columns, int *agg_column, bool *flags, int col_num, int col_len, const std::string &agg_op, sycl::queue &queue)
 {
     unsigned long long prod_ranges = 1;
 
@@ -110,10 +110,13 @@ std::tuple<int *, unsigned long long, bool *> group_by_aggregate(ColumnData<int>
         prod_ranges *= group_columns[i].max_value - group_columns[i].min_value + 1;
     }
 
-    // std::cout << "Product of ranges: " << prod_ranges << " for " << col_num << " grouping columns" << std::endl;
+    std::cout << "Product of ranges: " << prod_ranges << " for " << col_num << " grouping columns" << std::endl;
 
-    int *results = sycl::malloc_shared<int>((col_num + (sizeof(uint64_t) / sizeof(int))) * prod_ranges, queue);
-    queue.fill(results, 0, (col_num + (sizeof(uint64_t) / sizeof(int))) * prod_ranges).wait();
+    int *results = sycl::malloc_shared<int>(col_num * prod_ranges, queue);
+    queue.fill(results, 0, col_num * prod_ranges).wait();
+
+    uint64_t *agg_result = sycl::malloc_shared<uint64_t>(prod_ranges, queue);
+    queue.fill(agg_result, 0, prod_ranges).wait();
 
     unsigned *res_flags = sycl::malloc_shared<unsigned>(prod_ranges, queue);
     queue.fill(res_flags, 0, prod_ranges).wait();
@@ -133,24 +136,32 @@ std::tuple<int *, unsigned long long, bool *> group_by_aggregate(ColumnData<int>
     //                          int hash = 0, mult = 1;
     //                          for (int j = 0; j < col_num; j++)
     //                          {
-    //                              hash += (group_columns[j].content[i] - min_values[j]) * mult;
-    //                              mult *= max_values[j] - min_values[j] + 1;
+    //                              hash += (group_columns[j].content[i] - group_columns[j].min_value) * mult;
+    //                              mult *= group_columns[j].max_value - group_columns[j].min_value + 1;
     //                          }
     //                          hash %= prod_ranges;
 
     //                          out << "Computed hash in row " << i << sycl::endl;
 
-    //                          res_flags[hash] = true;
-    //                          for (int j = 0; j < col_num; j++)
-    //                              results[j * prod_ranges + hash] = group_columns[j].content[i];
+    //                          //  sycl::atomic_ref<unsigned, sycl::memory_order::relaxed,
+    //                          //                   sycl::memory_scope::device,
+    //                          //                   sycl::access::address_space::global_space>
+    //                          //      flag_obj(res_flags[hash]);
+    //                          //  if (flag_obj.fetch_add(1) == 0)
+    //                          //  {
+    //                          //      for (int j = 0; j < col_num; j++)
+    //                          //          results[j * prod_ranges + hash] = group_columns[j].content[i];
+    //                          //  }
 
     //                          out << "Stored group columns in row " << i << sycl::endl;
     //                          // if (agg_op == "SUM")
-    //                          auto sum_obj = sycl::atomic_ref<uint64_t, sycl::memory_order::relaxed,
-    //                                                          sycl::memory_scope::device,
-    //                                                          sycl::access::address_space::global_space>(
-    //                              ((uint64_t *)(&results[col_num * prod_ranges]))[hash]);
-    //                          sum_obj.fetch_add(agg_column[i]);
+    //                          //  auto sum_obj =
+    //                          //      sycl::atomic_ref<uint64_t,
+    //                          //                       sycl::memory_order::relaxed,
+    //                          //                       sycl::memory_scope::device,
+    //                          //                       sycl::access::address_space::global_space>(
+    //                          //          ((uint64_t *)(&results[col_num * prod_ranges]))[hash]);
+    //                          //  sum_obj.fetch_add(agg_column[i]);
 
     //                          out << "Updated aggregate in row " << i << sycl::endl;
     //                      }
@@ -189,8 +200,7 @@ std::tuple<int *, unsigned long long, bool *> group_by_aggregate(ColumnData<int>
                          sycl::atomic_ref<uint64_t,
                                           sycl::memory_order::relaxed,
                                           sycl::memory_scope::device,
-                                          sycl::access::address_space::global_space>(
-                             ((uint64_t *)(&results[col_num * prod_ranges]))[hash]);
+                                          sycl::access::address_space::global_space>(agg_result[hash]);
                      sum_obj.fetch_add(agg_column[i]);
                  }
              })
@@ -241,5 +251,5 @@ std::tuple<int *, unsigned long long, bool *> group_by_aggregate(ColumnData<int>
         .wait();
     sycl::free(res_flags, queue);
 
-    return std::make_tuple(results, prod_ranges, final_flags);
+    return std::make_tuple(results, prod_ranges, final_flags, agg_result);
 }

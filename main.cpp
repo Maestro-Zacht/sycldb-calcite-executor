@@ -463,7 +463,7 @@ void parse_project(const std::vector<ExprType> &exprs, TableData<int> &table_dat
         case ExprOption::LITERAL:
             // create a new column with the literal value
             new_columns[i].content = sycl::malloc_shared<int>(table_data.col_len, queue); // device
-            queue.fill(new_columns[i].content, exprs[i].literal.value, table_data.col_len).wait();
+            queue.fill(new_columns[i].content, (int)exprs[i].literal.value, table_data.col_len).wait();
             new_columns[i].min_value = exprs[i].literal.value;
             new_columns[i].max_value = exprs[i].literal.value;
             new_columns[i].has_ownership = true;
@@ -578,7 +578,7 @@ void parse_aggregate(TableData<int> &table_data, const AggType &agg, const std::
         ColumnData<int> *group_columns = sycl::malloc_shared<ColumnData<int>>(group.size(), queue);
         for (int i = 0; i < group.size(); i++)
             group_columns[i] = table_data.columns[table_data.column_indices.at(group[i])];
-        std::tuple<int *, unsigned long long, bool *> agg_res = group_by_aggregate(
+        std::tuple<int *, unsigned long long, bool *, uint64_t *> agg_res = group_by_aggregate(
             group_columns,
             table_data.columns[table_data.column_indices.at(agg.operands[0])].content,
             table_data.flags, group.size(), table_data.col_len, agg.agg, queue);
@@ -596,9 +596,10 @@ void parse_aggregate(TableData<int> &table_data, const AggType &agg, const std::
         for (int i = 0; i < group.size(); i++)
         {
             table_data.columns[i].content = sycl::malloc_shared<int>(std::get<1>(agg_res), queue);
-            std::memcpy(table_data.columns[i].content,
-                        std::get<0>(agg_res) + i * std::get<1>(agg_res),
-                        std::get<1>(agg_res) * sizeof(int));
+            queue.memcpy(table_data.columns[i].content,
+                         std::get<0>(agg_res) + i * std::get<1>(agg_res),
+                         std::get<1>(agg_res) * sizeof(int))
+                .wait();
             table_data.columns[i].has_ownership = true;
             table_data.columns[i].is_aggregate_result = false;
             table_data.columns[i].min_value = 0; // TODO: set real min value
@@ -606,10 +607,7 @@ void parse_aggregate(TableData<int> &table_data, const AggType &agg, const std::
             table_data.column_indices[i] = i;
         }
 
-        table_data.columns[group.size()].content = sycl::malloc_shared<int>(std::get<1>(agg_res) * (sizeof(uint64_t) / sizeof(int)), queue);
-        std::memcpy(table_data.columns[group.size()].content,
-                    std::get<0>(agg_res) + group.size() * std::get<1>(agg_res),
-                    std::get<1>(agg_res) * sizeof(uint64_t));
+        table_data.columns[group.size()].content = (int *)std::get<3>(agg_res);
         table_data.columns[group.size()].has_ownership = true;
         table_data.columns[group.size()].is_aggregate_result = true;
         table_data.columns[group.size()].min_value = 0; // TODO: set real min value
