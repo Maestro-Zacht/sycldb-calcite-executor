@@ -1,9 +1,8 @@
 #pragma once
 
-#include <types.hpp>
-#include <algorithm>
-#include <vector>
-#include <iostream>
+#include <sycl/sycl.hpp>
+
+#include "types.hpp"
 
 void sort_table(TableData<int> &table_data, const int *sort_columns, const bool *ascending, int num_sort_columns, sycl::queue &queue)
 {

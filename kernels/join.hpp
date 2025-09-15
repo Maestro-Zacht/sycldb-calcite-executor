@@ -1,5 +1,9 @@
 #pragma once
 
+#include <sycl/sycl.hpp>
+
+#include "types.hpp"
+
 template <typename T>
 inline T HASH(T X, T Y, T Z)
 {

@@ -2,6 +2,10 @@
 
 #include <string>
 
+#include <sycl/sycl.hpp>
+
+#include "types.hpp"
+
 enum class BinaryOp : uint8_t
 {
     Multiply,
