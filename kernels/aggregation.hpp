@@ -116,10 +116,10 @@ std::tuple<int *, unsigned long long, bool *, uint64_t *> group_by_aggregate(Col
     queue.fill(results, 0, col_num * prod_ranges).wait();
 
     uint64_t *agg_result = sycl::malloc_shared<uint64_t>(prod_ranges, queue);
-    queue.fill(agg_result, 0, prod_ranges).wait();
+    queue.fill(agg_result, (uint64_t)0, prod_ranges).wait();
 
     unsigned *res_flags = sycl::malloc_shared<unsigned>(prod_ranges, queue);
-    queue.fill(res_flags, 0, prod_ranges).wait();
+    queue.fill(res_flags, (unsigned)0, prod_ranges).wait();
 
     queue.parallel_for(
              col_len,
@@ -136,7 +136,6 @@ std::tuple<int *, unsigned long long, bool *, uint64_t *> group_by_aggregate(Col
                      }
                      hash %= prod_ranges;
 
-                     //  res_flags[hash] = true;
                      sycl::atomic_ref<unsigned, sycl::memory_order::relaxed,
                                       sycl::memory_scope::device,
                                       sycl::access::address_space::global_space>
@@ -158,6 +157,11 @@ std::tuple<int *, unsigned long long, bool *, uint64_t *> group_by_aggregate(Col
              })
         .wait();
 
+    // for (int i = 0; i < prod_ranges; i++)
+    //     std::cout << i << " :: " << agg_result[i] << std::endl;
+
+    // std::cout << "prod ranges :: " << prod_ranges << "\nStarting group by aggregation kernel..." << std::endl;
+
     // for (int i = 0; i < col_len; i++)
     // {
     //     if (flags[i])
@@ -170,9 +174,21 @@ std::tuple<int *, unsigned long long, bool *, uint64_t *> group_by_aggregate(Col
     //         }
     //         hash %= prod_ranges;
 
+    //         if (hash == 99)
+    //         {
+    //             if (group_columns[1].content[i] == 1995 && group_columns[0].content[i] == 24)
+    //             {
+    //                 std::cout << agg_column[i] << " -> " << agg_result[hash] << " (" << hash << ")" << std::endl;
+    //             }
+    //             else
+    //             {
+    //                 std::cout << "Unexpected group by result: " << group_columns[0].content[i] << ", " << group_columns[1].content[i] << " -> " << agg_column[i] << " (" << hash << ")" << std::endl;
+    //             }
+    //         }
+
     //         if (res_flags[hash] == 0)
     //         {
-    //             res_flags[hash] = true;
+    //             res_flags[hash] = 1;
     //             for (int j = 0; j < col_num; j++)
     //                 results[j * prod_ranges + hash] = group_columns[j].content[i];
     //         }
