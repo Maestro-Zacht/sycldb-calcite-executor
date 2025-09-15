@@ -77,14 +77,18 @@ void perform_operation(T result[], const T a[], T b, bool flags[], int size, con
 }
 
 template <typename T, typename U>
-void aggregate_operation(U &result, const T a[], bool flags[], int size, const std::string &op, sycl::queue &queue)
+void aggregate_operation(U *result, const T a[], bool flags[], int size, const std::string &op, sycl::queue &queue)
 {
-    result = 0;
-    unsigned long long *d_result = sycl::malloc_shared<unsigned long long>(1, queue);
-    queue.memset(d_result, 0, sizeof(unsigned long long)).wait();
+    auto start = std::chrono::high_resolution_clock::now();
+    U *result_d = sycl::malloc_device<U>(1, queue);
+    queue.memset(result_d, 0, sizeof(U)).wait();
+    auto end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::milli> memset_time = end - start;
+    std::cout << "Memset time: " << memset_time.count() << " ms" << std::endl;
+    start = std::chrono::high_resolution_clock::now();
     queue.parallel_for(
              size,
-             sycl::reduction(d_result, sycl::plus<>()),
+             sycl::reduction(result_d, sycl::plus<>()),
              [=](sycl::id<1> idx, auto &sum)
              {
                  if (flags[idx])
@@ -93,8 +97,16 @@ void aggregate_operation(U &result, const T a[], bool flags[], int size, const s
                  }
              })
         .wait();
-    queue.memcpy(&result, d_result, sizeof(unsigned long long)).wait();
-    sycl::free(d_result, queue);
+    end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::milli> kernel_time = end - start;
+    std::cout << "Aggregate kernel time: " << kernel_time.count() << " ms" << std::endl;
+
+    start = std::chrono::high_resolution_clock::now();
+    queue.memcpy(result, result_d, sizeof(U)).wait();
+    end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::milli> memcpy_time = end - start;
+    sycl::free(result_d, queue);
+    std::cout << "Memcpy time: " << memcpy_time.count() << " ms" << std::endl;
 }
 
 /*unsigned long long aggregate_operation(const int a[], bool flags[], int size, const std::string &op, sycl::queue &queue)

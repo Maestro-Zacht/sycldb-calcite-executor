@@ -13,7 +13,7 @@ void parse_aggregate(TableData<int> &table_data, const AggType &agg, const std::
 {
     if (group.size() == 0)
     {
-        unsigned long long result;
+        uint64_t *result = sycl::malloc_shared<uint64_t>(1, queue);
         aggregate_operation(result, table_data.columns[table_data.column_indices.at(agg.operands[0])].content,
                             table_data.flags, table_data.col_len, agg.agg, queue);
         // Free old columns and replace with the result column
@@ -25,8 +25,7 @@ void parse_aggregate(TableData<int> &table_data, const AggType &agg, const std::
         table_data.column_indices.clear();
 
         table_data.columns = sycl::malloc_shared<ColumnData<int>>(1, queue);
-        table_data.columns[0].content = sycl::malloc_shared<int>(sizeof(unsigned long long) / sizeof(int), queue);
-        ((unsigned long long *)table_data.columns[0].content)[0] = result;
+        table_data.columns[0].content = (int *)result;
         table_data.columns[0].has_ownership = true;
         table_data.columns[0].is_aggregate_result = true;
         table_data.columns[0].min_value = 0; // TODO: set real min value

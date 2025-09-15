@@ -82,9 +82,16 @@ void full_join(TableData<int> &probe_table,
         group_by_column = build_table.column_indices.at(build_table.group_by_column),
         ht_len = build_table.columns[build_column].max_value -
                  build_table.columns[build_column].min_value + 1,
-        *ht = sycl::malloc_shared<int>(ht_len * 2, queue);
+        *ht = sycl::malloc_device<int>(ht_len * 2, queue);
+
+    auto start = std::chrono::high_resolution_clock::now();
 
     queue.fill(ht, 0, ht_len * 2).wait();
+
+    auto end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::milli> diff1 = end - start;
+
+    start = std::chrono::high_resolution_clock::now();
 
     build_key_vals_ht(
         build_table.columns[build_column].content,
@@ -92,10 +99,15 @@ void full_join(TableData<int> &probe_table,
         build_table.flags, build_table.col_len, ht, ht_len,
         build_table.columns[build_column].min_value, queue);
 
+    end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::milli> diff2 = end - start;
+
     bool *probe_flags = probe_table.flags;
     int *probe_content = probe_table.columns[probe_column].content,
         build_col_min = build_table.columns[build_column].min_value,
         build_col_max = build_table.columns[build_column].max_value;
+
+    start = std::chrono::high_resolution_clock::now();
 
     queue.parallel_for(
              sycl::range<1>{(unsigned long)probe_table.col_len},
@@ -116,6 +128,11 @@ void full_join(TableData<int> &probe_table,
              })
         .wait();
 
+    end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::milli> diff3 = end - start;
+
+    start = std::chrono::high_resolution_clock::now();
+
     // the group by column index must refer to the old foreign key
     probe_table.column_indices.erase(probe_col_index);
     probe_table.column_indices[probe_table.col_number + build_table.group_by_column] = probe_column;
@@ -125,4 +142,13 @@ void full_join(TableData<int> &probe_table,
     probe_table.columns[probe_column].max_value = build_table.columns[group_by_column].max_value;
 
     sycl::free(ht, queue);
+
+    end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::milli> diff4 = end - start;
+
+    std::cout << "diff1 (" << ht_len << "): " << diff1.count() << " ms\n"
+              << "diff2: " << diff2.count() << " ms\n"
+              << "diff3: " << diff3.count() << " ms\n"
+              << "diff4: " << diff4.count() << " ms"
+              << std::endl;
 }

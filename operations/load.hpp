@@ -80,11 +80,7 @@ TableData<int> loadTable(std::string table_name, int col_number, const std::set<
 
     std::cout << "Loaded table: " << res.table_name << " with " << res.col_len << " rows and " << res.col_number << " columns (" << res.columns_size << " in memory)" << std::endl;
 
-    bool *flags = sycl::malloc_host<bool>(res.col_len, queue);
-    std::fill_n(flags, res.col_len, true);
     res.flags = sycl::malloc_shared<bool>(res.col_len, queue);
-    queue.prefetch(res.flags, res.col_len * sizeof(bool));
-    queue.memcpy(res.flags, flags, res.col_len * sizeof(bool)).wait();
-    sycl::free(flags, queue);
+    queue.fill(res.flags, true, res.col_len).wait();
     return res;
 }

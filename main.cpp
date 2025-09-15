@@ -75,7 +75,7 @@ void execute_result(const PlanResult &result, const std::string &data_path)
     std::cout << "Running on: " << queue.get_device().get_info<sycl::info::device::name>() << std::endl;
     TableData<int> tables[MAX_NTABLES];
     int current_table = 0,
-        *output_table = sycl::malloc_shared<int>(result.rels.size(), queue); // used to track the output table of each operation, in order to be referenced in the joins. other operation types just use the previous output table
+        *output_table = sycl::malloc_host<int>(result.rels.size(), queue); // used to track the output table of each operation, in order to be referenced in the joins. other operation types just use the previous output table
     ExecutionInfo exec_info = parse_execution_info(result);
     std::vector<void *> resources; // used to track allocated resources for freeing at the end
     resources.reserve(100);        // high enough to avoid multiple reallocations

@@ -11,16 +11,15 @@ RESULT_FILES = $(notdir $(wildcard ./q*.res))
 RESULT_NAMES = $(patsubst %.res, %, $(RESULT_FILES))
 
 .PHONY: clean check fullcheck q%
-.PRECIOUS: $(TARGET) q%.res
 
 
 $(TARGET): $(SRC) $(HEADERS)
 	$(CXX) $(CXXFLAGS) $(SRC) -o $(TARGET) $(LDFLAGS)
 
-q%: q%.res
-	diff ./reference_results/$@.txt ./$<
+q%: q%.result
+	diff ./reference_results/$@.txt ./$@.res
 
-q%.res: $(TARGET)
+q%.result: $(TARGET)
 	./$(TARGET) ./queries/transformed/q$*.sql
 
 clean:
