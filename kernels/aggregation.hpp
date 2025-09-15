@@ -1,7 +1,5 @@
 #pragma once
 
-#include <string>
-
 #include <sycl/sycl.hpp>
 
 #include "types.hpp"
@@ -84,9 +82,16 @@ void aggregate_operation(U &result, const T a[], bool flags[], int size, const s
     result = 0;
     unsigned long long *d_result = sycl::malloc_shared<unsigned long long>(1, queue);
     queue.memset(d_result, 0, sizeof(unsigned long long)).wait();
-    queue.parallel_for(size, sycl::reduction(d_result, sycl::plus<>()), [=](sycl::id<1> idx, auto &sum)
-                       {
-        if (flags[idx]) { sum.combine(a[idx]); } })
+    queue.parallel_for(
+             size,
+             sycl::reduction(d_result, sycl::plus<>()),
+             [=](sycl::id<1> idx, auto &sum)
+             {
+                 if (flags[idx])
+                 {
+                     sum.combine(a[idx]);
+                 }
+             })
         .wait();
     queue.memcpy(&result, d_result, sizeof(unsigned long long)).wait();
     sycl::free(d_result, queue);
@@ -113,8 +118,6 @@ std::tuple<int *, unsigned long long, bool *, uint64_t *> group_by_aggregate(Col
     {
         prod_ranges *= group_columns[i].max_value - group_columns[i].min_value + 1;
     }
-
-    std::cout << "Product of ranges: " << prod_ranges << " for " << col_num << " grouping columns" << std::endl;
 
     int *results = sycl::malloc_shared<int>(col_num * prod_ranges, queue);
     queue.fill(results, 0, col_num * prod_ranges).wait();

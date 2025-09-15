@@ -11,26 +11,26 @@ RESULT_FILES = $(notdir $(wildcard ./q*.res))
 RESULT_NAMES = $(patsubst %.res, %, $(RESULT_FILES))
 
 .PHONY: clean check fullcheck q%
+.PRECIOUS: $(TARGET) q%.res
 
 
 $(TARGET): $(SRC) $(HEADERS)
 	$(CXX) $(CXXFLAGS) $(SRC) -o $(TARGET) $(LDFLAGS)
 
-q%: $(TARGET)
-	./$(TARGET) ./queries/transformed/$@.sql
+q%: q%.res
+	diff ./reference_results/$@.txt ./$<
 
-q%.res: q%
-	diff ./reference_results/$<.txt ./$@
+q%.res: $(TARGET)
+	./$(TARGET) ./queries/transformed/q$*.sql
 
 clean:
 	-rm client
 	-rm q*.res
 
 check:
-	@echo "========== Checking results... =========="
 	@for q in $(RESULT_NAMES); do \
 		diff -q ./reference_results/$$q.txt ./$$q.res; \
 		echo "checked $$q"; \
 	done
 
-fullcheck: $(QUERY_NAMES) $(RESULT_FILES)
+fullcheck: $(QUERY_NAMES) $(RESULT_NAMES)

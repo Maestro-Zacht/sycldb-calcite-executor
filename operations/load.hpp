@@ -37,19 +37,43 @@ TableData<int> loadTable(std::string table_name, int col_number, const std::set<
         int num_entries = static_cast<int>(fileSize / sizeof(int));
 
         colData.seekg(0, std::ios::beg);
-        int *h_col = sycl::malloc_host<int>(num_entries, queue);
-        colData.read((char *)h_col, num_entries * sizeof(int));
 
         res.columns[i].content = sycl::malloc_shared<int>(num_entries, queue);
-        queue.memcpy(res.columns[i].content, h_col, num_entries * sizeof(int)).wait();
-        queue.wait();
+        colData.read((char *)res.columns[i].content, num_entries * sizeof(int));
+        colData.close();
 
         res.col_len = num_entries;
         res.columns[i].has_ownership = true;
         res.columns[i].is_aggregate_result = false;
-        res.columns[i].min_value = *std::min_element(h_col, h_col + res.col_len);
-        res.columns[i].max_value = *std::max_element(h_col, h_col + res.col_len);
-        sycl::free(h_col, queue);
+
+        int *min_val = sycl::malloc_shared<int>(1, queue);
+        int *max_val = sycl::malloc_shared<int>(1, queue);
+        int *content = res.columns[i].content;
+
+        *min_val = content[0];
+        *max_val = content[0];
+
+        queue.submit(
+                 [&](sycl::handler &cgh)
+                 {
+                     cgh.parallel_for(
+                         sycl::range<1>(res.col_len - 1),
+                         sycl::reduction(max_val, sycl::maximum<int>()),
+                         sycl::reduction(min_val, sycl::minimum<int>()),
+                         [=](sycl::id<1> idx, auto &maxr, auto &minr)
+                         {
+                             auto j = idx[0] + 1;
+                             int val = content[j];
+                             maxr.combine(val);
+                             minr.combine(val);
+                         });
+                 })
+            .wait();
+
+        res.columns[i].min_value = *min_val;
+        res.columns[i].max_value = *max_val;
+        sycl::free(min_val, queue);
+        sycl::free(max_val, queue);
 
         i++;
     }

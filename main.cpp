@@ -71,7 +71,7 @@ void save_result(const TableData<int> &table_data, const std::string &data_path)
 
 void execute_result(const PlanResult &result, const std::string &data_path)
 {
-    sycl::queue queue{sycl::gpu_selector_v, sycl::property::queue::in_order()};
+    sycl::queue queue{sycl::gpu_selector_v};
     std::cout << "Running on: " << queue.get_device().get_info<sycl::info::device::name>() << std::endl;
     TableData<int> tables[MAX_NTABLES];
     int current_table = 0,
