@@ -105,7 +105,7 @@ void parse_filter(const ExprType &expr,
                 cols[i] = table_data.columns[table_data.column_indices.at(expr.operands[i].input)].content;
                 break;
             case ExprOption::LITERAL:
-                cols[i] = sycl::malloc_shared<int>(1, queue);
+                cols[i] = new int[1];
                 literal = true;
                 cols[i][0] = expr.operands[i].literal.value;
                 break;
@@ -122,7 +122,7 @@ void parse_filter(const ExprType &expr,
         if (literal)
         {
             selection(table_data.flags, cols[0], expr.op, cols[1][0], parent_op, table_data.col_len, queue);
-            sycl::free(cols[1], queue);
+            delete[] cols[1];
         }
         else
             selection(table_data.flags, cols[0], expr.op, cols[1], parent_op, table_data.col_len, queue);

@@ -13,7 +13,7 @@ void parse_aggregate(TableData<int> &table_data, const AggType &agg, const std::
 {
     if (group.size() == 0)
     {
-        uint64_t *result = sycl::malloc_shared<uint64_t>(1, queue);
+        uint64_t *result = sycl::malloc_device<uint64_t>(1, queue);
         aggregate_operation(result, table_data.columns[table_data.column_indices.at(agg.operands[0])].content,
                             table_data.flags, table_data.col_len, agg.agg, queue);
         // Free old columns and replace with the result column
@@ -33,8 +33,8 @@ void parse_aggregate(TableData<int> &table_data, const AggType &agg, const std::
         table_data.col_number = 1;
         table_data.columns_size = 1;
         table_data.col_len = 1;
-        table_data.flags = sycl::malloc_shared<bool>(1, queue);
-        table_data.flags[0] = true;
+        table_data.flags = sycl::malloc_device<bool>(1, queue);
+        queue.fill(table_data.flags, true, 1).wait();
         table_data.column_indices[0] = 0;
     }
     else
@@ -59,7 +59,7 @@ void parse_aggregate(TableData<int> &table_data, const AggType &agg, const std::
         table_data.columns = sycl::malloc_shared<ColumnData<int>>(group.size() + 1, queue);
         for (int i = 0; i < group.size(); i++)
         {
-            table_data.columns[i].content = sycl::malloc_shared<int>(std::get<1>(agg_res), queue);
+            table_data.columns[i].content = sycl::malloc_device<int>(std::get<1>(agg_res), queue);
             queue.memcpy(table_data.columns[i].content,
                          std::get<0>(agg_res) + i * std::get<1>(agg_res),
                          std::get<1>(agg_res) * sizeof(int))

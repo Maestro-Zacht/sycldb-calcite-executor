@@ -27,7 +27,7 @@ void parse_project(const std::vector<ExprType> &exprs, TableData<int> &table_dat
             break;
         case ExprOption::LITERAL:
             // create a new column with the literal value
-            new_columns[i].content = sycl::malloc_shared<int>(table_data.col_len, queue); // device
+            new_columns[i].content = sycl::malloc_device<int>(table_data.col_len, queue); // device
             queue.fill(new_columns[i].content, (int)exprs[i].literal.value, table_data.col_len).wait();
             new_columns[i].min_value = exprs[i].literal.value;
             new_columns[i].max_value = exprs[i].literal.value;
@@ -41,7 +41,7 @@ void parse_project(const std::vector<ExprType> &exprs, TableData<int> &table_dat
                 std::cout << "Project operation: Unsupported number of operands for EXPR" << std::endl;
                 return;
             }
-            new_columns[i].content = sycl::malloc_shared<int>(table_data.col_len, queue); // device
+            new_columns[i].content = sycl::malloc_device<int>(table_data.col_len, queue); // device
             new_columns[i].has_ownership = true;
             new_columns[i].is_aggregate_result = false;
 

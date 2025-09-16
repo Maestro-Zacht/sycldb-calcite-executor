@@ -38,9 +38,13 @@ TableData<int> loadTable(std::string table_name, int col_number, const std::set<
 
         colData.seekg(0, std::ios::beg);
 
-        res.columns[i].content = sycl::malloc_shared<int>(num_entries, queue);
-        colData.read((char *)res.columns[i].content, num_entries * sizeof(int));
+        int *content = sycl::malloc_host<int>(num_entries, queue);
+        colData.read((char *)content, num_entries * sizeof(int));
         colData.close();
+
+        res.columns[i].content = sycl::malloc_device<int>(num_entries, queue);
+        queue.copy(content, res.columns[i].content, num_entries).wait();
+        sycl::free(content, queue);
 
         res.col_len = num_entries;
         res.columns[i].has_ownership = true;
@@ -48,10 +52,10 @@ TableData<int> loadTable(std::string table_name, int col_number, const std::set<
 
         int *min_val = sycl::malloc_shared<int>(1, queue);
         int *max_val = sycl::malloc_shared<int>(1, queue);
-        int *content = res.columns[i].content;
+        content = res.columns[i].content;
 
-        *min_val = content[0];
-        *max_val = content[0];
+        queue.copy(content, min_val, 1).wait();
+        queue.copy(content, max_val, 1).wait();
 
         queue.submit(
                  [&](sycl::handler &cgh)
@@ -80,7 +84,7 @@ TableData<int> loadTable(std::string table_name, int col_number, const std::set<
 
     std::cout << "Loaded table: " << res.table_name << " with " << res.col_len << " rows and " << res.col_number << " columns (" << res.columns_size << " in memory)" << std::endl;
 
-    res.flags = sycl::malloc_shared<bool>(res.col_len, queue);
+    res.flags = sycl::malloc_device<bool>(res.col_len, queue);
     queue.fill(res.flags, true, res.col_len).wait();
     return res;
 }

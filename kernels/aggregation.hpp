@@ -4,6 +4,8 @@
 
 #include "types.hpp"
 
+#define PRINT_AGGREGATE_DEBUG_INFO 0
+
 enum class BinaryOp : uint8_t
 {
     Multiply,
@@ -79,16 +81,23 @@ void perform_operation(T result[], const T a[], T b, bool flags[], int size, con
 template <typename T, typename U>
 void aggregate_operation(U *result, const T a[], bool flags[], int size, const std::string &op, sycl::queue &queue)
 {
+#if PRINT_AGGREGATE_DEBUG_INFO
     auto start = std::chrono::high_resolution_clock::now();
-    U *result_d = sycl::malloc_device<U>(1, queue);
-    queue.memset(result_d, 0, sizeof(U)).wait();
+#endif
+
+    queue.memset(result, 0, sizeof(U)).wait();
+
+#if PRINT_AGGREGATE_DEBUG_INFO
     auto end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double, std::milli> memset_time = end - start;
     std::cout << "Memset time: " << memset_time.count() << " ms" << std::endl;
+
     start = std::chrono::high_resolution_clock::now();
+#endif
+
     queue.parallel_for(
              size,
-             sycl::reduction(result_d, sycl::plus<>()),
+             sycl::reduction(result, sycl::plus<>()),
              [=](sycl::id<1> idx, auto &sum)
              {
                  if (flags[idx])
@@ -97,16 +106,12 @@ void aggregate_operation(U *result, const T a[], bool flags[], int size, const s
                  }
              })
         .wait();
+
+#if PRINT_AGGREGATE_DEBUG_INFO
     end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double, std::milli> kernel_time = end - start;
     std::cout << "Aggregate kernel time: " << kernel_time.count() << " ms" << std::endl;
-
-    start = std::chrono::high_resolution_clock::now();
-    queue.memcpy(result, result_d, sizeof(U)).wait();
-    end = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double, std::milli> memcpy_time = end - start;
-    sycl::free(result_d, queue);
-    std::cout << "Memcpy time: " << memcpy_time.count() << " ms" << std::endl;
+#endif
 }
 
 /*unsigned long long aggregate_operation(const int a[], bool flags[], int size, const std::string &op, sycl::queue &queue)
@@ -131,14 +136,16 @@ std::tuple<int *, unsigned long long, bool *, uint64_t *> group_by_aggregate(Col
         prod_ranges *= group_columns[i].max_value - group_columns[i].min_value + 1;
     }
 
-    int *results = sycl::malloc_shared<int>(col_num * prod_ranges, queue);
-    queue.fill(results, 0, col_num * prod_ranges).wait();
+    int *results = sycl::malloc_device<int>(col_num * prod_ranges, queue);
+    queue.fill(results, 0, col_num * prod_ranges);
 
-    uint64_t *agg_result = sycl::malloc_shared<uint64_t>(prod_ranges, queue);
-    queue.fill(agg_result, (uint64_t)0, prod_ranges).wait();
+    uint64_t *agg_result = sycl::malloc_device<uint64_t>(prod_ranges, queue);
+    queue.fill(agg_result, (uint64_t)0, prod_ranges);
 
-    unsigned *res_flags = sycl::malloc_shared<unsigned>(prod_ranges, queue);
-    queue.fill(res_flags, (unsigned)0, prod_ranges).wait();
+    unsigned *res_flags = sycl::malloc_device<unsigned>(prod_ranges, queue);
+    queue.fill(res_flags, (unsigned)0, prod_ranges);
+
+    queue.wait();
 
     queue.parallel_for(
              col_len,
@@ -221,14 +228,7 @@ std::tuple<int *, unsigned long long, bool *, uint64_t *> group_by_aggregate(Col
     //     }
     // }
 
-    // int *h_results = sycl::malloc_shared<int>((col_num + (sizeof(uint64_t) / sizeof(int))) * prod_ranges, queue);
-    // bool *h_res_flags = sycl::malloc_shared<bool>(prod_ranges, queue);
-    // queue.memcpy(h_results, results, sizeof(int) * (col_num + (sizeof(uint64_t) / sizeof(int))) * prod_ranges).wait();
-    // queue.memcpy(h_res_flags, res_flags, sizeof(bool) * prod_ranges).wait();
-    // sycl::free(results, queue);
-    // sycl::free(res_flags, queue);
-
-    bool *final_flags = sycl::malloc_shared<bool>(prod_ranges, queue);
+    bool *final_flags = sycl::malloc_device<bool>(prod_ranges, queue);
     queue.parallel_for(
              prod_ranges,
              [=](sycl::id<1> idx)

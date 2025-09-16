@@ -4,6 +4,8 @@
 
 #include "types.hpp"
 
+#define PRINT_JOIN_DEBUG_INFO 0
+
 template <typename T>
 inline T HASH(T X, T Y, T Z)
 {
@@ -52,7 +54,7 @@ void filter_join(T build_col[],
                  int probe_col_len, sycl::queue &queue)
 {
     int ht_len = build_max_value - build_min_value + 1;
-    bool *ht = sycl::malloc_shared<bool>(ht_len, queue);
+    bool *ht = sycl::malloc_device<bool>(ht_len, queue);
     queue.fill(ht, false, ht_len).wait();
 
     build_keys_ht(build_col, build_flags, build_col_len, ht, ht_len, build_min_value, queue);
@@ -84,14 +86,18 @@ void full_join(TableData<int> &probe_table,
                  build_table.columns[build_column].min_value + 1,
         *ht = sycl::malloc_device<int>(ht_len * 2, queue);
 
+#if PRINT_JOIN_DEBUG_INFO
     auto start = std::chrono::high_resolution_clock::now();
+#endif
 
     queue.fill(ht, 0, ht_len * 2).wait();
 
+#if PRINT_JOIN_DEBUG_INFO
     auto end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double, std::milli> diff1 = end - start;
 
     start = std::chrono::high_resolution_clock::now();
+#endif
 
     build_key_vals_ht(
         build_table.columns[build_column].content,
@@ -99,15 +105,19 @@ void full_join(TableData<int> &probe_table,
         build_table.flags, build_table.col_len, ht, ht_len,
         build_table.columns[build_column].min_value, queue);
 
+#if PRINT_JOIN_DEBUG_INFO
     end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double, std::milli> diff2 = end - start;
+#endif
 
     bool *probe_flags = probe_table.flags;
     int *probe_content = probe_table.columns[probe_column].content,
         build_col_min = build_table.columns[build_column].min_value,
         build_col_max = build_table.columns[build_column].max_value;
 
+#if PRINT_JOIN_DEBUG_INFO
     start = std::chrono::high_resolution_clock::now();
+#endif
 
     queue.parallel_for(
              sycl::range<1>{(unsigned long)probe_table.col_len},
@@ -128,10 +138,12 @@ void full_join(TableData<int> &probe_table,
              })
         .wait();
 
+#if PRINT_JOIN_DEBUG_INFO
     end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double, std::milli> diff3 = end - start;
 
     start = std::chrono::high_resolution_clock::now();
+#endif
 
     // the group by column index must refer to the old foreign key
     probe_table.column_indices.erase(probe_col_index);
@@ -143,6 +155,7 @@ void full_join(TableData<int> &probe_table,
 
     sycl::free(ht, queue);
 
+#if PRINT_JOIN_DEBUG_INFO
     end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double, std::milli> diff4 = end - start;
 
@@ -151,4 +164,5 @@ void full_join(TableData<int> &probe_table,
               << "diff3: " << diff3.count() << " ms\n"
               << "diff4: " << diff4.count() << " ms"
               << std::endl;
+#endif
 }

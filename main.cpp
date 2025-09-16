@@ -168,10 +168,39 @@ void execute_result(const PlanResult &result, const std::string &data_path)
     auto end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double, std::milli> exec_time = end - start;
 
-    // print_result(tables[output_table[result.rels.size() - 1]]);
-    save_result(tables[output_table[result.rels.size() - 1]], data_path);
-
     std::cout << "Execution time: " << exec_time.count() << " ms" << std::endl;
+
+    TableData<int> &final_table = tables[output_table[result.rels.size() - 1]];
+    for (int i = 0; i < final_table.columns_size; i++)
+    {
+        if (final_table.columns[i].has_ownership)
+        {
+            if (final_table.columns[i].is_aggregate_result)
+            {
+                uint64_t *host_col = sycl::malloc_host<uint64_t>(final_table.col_len, queue);
+                queue.copy((uint64_t *)final_table.columns[i].content, host_col, final_table.col_len).wait();
+                sycl::free(final_table.columns[i].content, queue);
+                final_table.columns[i].content = (int *)host_col;
+            }
+            else
+            {
+                int *host_col = sycl::malloc_host<int>(final_table.col_len, queue);
+                queue.copy(final_table.columns[i].content, host_col, final_table.col_len).wait();
+                sycl::free(final_table.columns[i].content, queue);
+                final_table.columns[i].content = host_col;
+            }
+        }
+        else
+            std::cout << "!!!!!!!!!! Column " << i << " does not have ownership, skipping copy to host !!!!!!!!!!" << std::endl;
+    }
+
+    bool *host_flags = sycl::malloc_host<bool>(final_table.col_len, queue);
+    queue.copy(final_table.flags, host_flags, final_table.col_len).wait();
+    sycl::free(final_table.flags, queue);
+    final_table.flags = host_flags;
+
+    // print_result(final_table);
+    save_result(final_table, data_path);
 
     start = std::chrono::high_resolution_clock::now();
 
