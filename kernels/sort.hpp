@@ -28,34 +28,34 @@ void sort_table(TableData<int> &table_data, const int *sort_columns, const bool 
     queue.wait();
 
     auto compare = [&](int a, int b)
-    {
-        for (size_t i = 0; i < num_sort_columns; i++)
         {
-            bool asc = ascending[i];
-            ColumnData<int> col = table_data.columns[table_data.column_indices.at(sort_columns[i])];
-            int *col_content = columns_content[table_data.column_indices.at(sort_columns[i])];
-
-            if (col.is_aggregate_result)
+            for (size_t i = 0; i < num_sort_columns; i++)
             {
-                uint64_t *content = (uint64_t *)col_content;
+                bool asc = ascending[i];
+                ColumnData<int> col = table_data.columns[table_data.column_indices.at(sort_columns[i])];
+                int *col_content = columns_content[table_data.column_indices.at(sort_columns[i])];
 
-                if (content[a] != content[b])
+                if (col.is_aggregate_result)
                 {
-                    return asc != (content[a] > content[b]);
+                    uint64_t *content = (uint64_t *)col_content;
+
+                    if (content[a] != content[b])
+                    {
+                        return asc != (content[a] > content[b]);
+                    }
+                }
+                else
+                {
+                    int *content = col_content;
+
+                    if (content[a] != content[b])
+                    {
+                        return asc != (content[a] > content[b]);
+                    }
                 }
             }
-            else
-            {
-                int *content = col_content;
-
-                if (content[a] != content[b])
-                {
-                    return asc != (content[a] > content[b]);
-                }
-            }
-        }
-        return false;
-    };
+            return false;
+        };
 
     std::sort(indices, indices + table_data.col_len, compare);
 

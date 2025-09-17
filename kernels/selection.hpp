@@ -97,7 +97,8 @@ void selection(bool flags[], T arr[], std::string op, T value, std::string paren
         [=](sycl::id<1> idx)
         {
             flags[idx] = logical(logic, flags[idx], compare(comparison, arr[idx], value));
-        });
+        }
+    );
     queue.wait();
 
     // std::cout << "Running selection with comparison: " << op << " and parent op " << parent_op << std::endl;
@@ -117,7 +118,8 @@ void selection(bool flags[], T operand1[], std::string op, T operand2[], std::st
         [=](sycl::id<1> idx)
         {
             flags[idx] = logical(logic, flags[idx], compare(comparison, operand1[idx], operand2[idx]));
-        });
+        }
+    );
     queue.wait();
 
     // std::cout << "Running selection with comparison: " << op << " and parent op " << parent_op << std::endl;

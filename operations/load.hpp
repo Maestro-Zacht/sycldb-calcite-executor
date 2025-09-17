@@ -9,7 +9,7 @@
 
 #define DATA_DIR "/tmp/data/s20_columnar/"
 
-TableData<int> loadTable(std::string table_name, int col_number, const std::set<int> &columns, sycl::queue &queue)
+TableData<int> loadTable(std::string table_name, int col_number, const std::set<int> &columns, std::vector<void *> &resources, sycl::queue &queue)
 {
     TableData<int> res;
 
@@ -28,7 +28,7 @@ TableData<int> loadTable(std::string table_name, int col_number, const std::set<
         std::transform(table_name.begin(), table_name.end(), table_name.begin(), ::toupper);
         std::string col_name = table_name + std::to_string(col_idx);
         std::string filename = DATA_DIR + col_name;
-        std::cout << "Loading column: " << filename << std::endl;
+        // std::cout << "Loading column: " << filename << std::endl;
 
         std::ifstream colData(filename.c_str(), std::ios::in | std::ios::binary);
 
@@ -43,8 +43,8 @@ TableData<int> loadTable(std::string table_name, int col_number, const std::set<
         colData.close();
 
         res.columns[i].content = sycl::malloc_device<int>(num_entries, queue);
-        queue.copy(content, res.columns[i].content, num_entries).wait();
-        sycl::free(content, queue);
+        auto e1 = queue.copy(content, res.columns[i].content, num_entries);
+        resources.push_back(content);
 
         res.col_len = num_entries;
         res.columns[i].has_ownership = true;
@@ -54,37 +54,44 @@ TableData<int> loadTable(std::string table_name, int col_number, const std::set<
         int *max_val = sycl::malloc_shared<int>(1, queue);
         content = res.columns[i].content;
 
-        queue.copy(content, min_val, 1).wait();
-        queue.copy(content, max_val, 1).wait();
+        auto e2 = queue.copy(content, min_val, 1, e1);
+        auto e3 = queue.copy(content, max_val, 1, e1);
 
         queue.submit(
-                 [&](sycl::handler &cgh)
-                 {
-                     cgh.parallel_for(
-                         sycl::range<1>(res.col_len - 1),
-                         sycl::reduction(max_val, sycl::maximum<int>()),
-                         sycl::reduction(min_val, sycl::minimum<int>()),
-                         [=](sycl::id<1> idx, auto &maxr, auto &minr)
-                         {
-                             auto j = idx[0] + 1;
-                             int val = content[j];
-                             maxr.combine(val);
-                             minr.combine(val);
-                         });
-                 })
-            .wait();
+            [&](sycl::handler &cgh)
+            {
+                cgh.depends_on(e2);
+                cgh.depends_on(e3);
+
+                cgh.parallel_for(
+                    sycl::range<1>(res.col_len - 1),
+                    sycl::reduction(max_val, sycl::maximum<int>()),
+                    sycl::reduction(min_val, sycl::minimum<int>()),
+                    [=](sycl::id<1> idx, auto &maxr, auto &minr)
+                    {
+                        auto j = idx[0] + 1;
+                        int val = content[j];
+                        maxr.combine(val);
+                        minr.combine(val);
+                    }
+                );
+            }
+        );
 
         res.columns[i].min_value = *min_val;
         res.columns[i].max_value = *max_val;
-        sycl::free(min_val, queue);
-        sycl::free(max_val, queue);
+        resources.push_back(min_val);
+        resources.push_back(max_val);
 
         i++;
     }
 
-    std::cout << "Loaded table: " << res.table_name << " with " << res.col_len << " rows and " << res.col_number << " columns (" << res.columns_size << " in memory)" << std::endl;
+    std::cout << "Loaded table: " << res.table_name
+        << " with " << res.col_len << " rows and "
+        << res.col_number << " columns ("
+        << res.columns_size << " in memory)" << std::endl;
 
     res.flags = sycl::malloc_device<bool>(res.col_len, queue);
-    queue.fill(res.flags, true, res.col_len).wait();
+    queue.fill(res.flags, true, res.col_len);
     return res;
 }

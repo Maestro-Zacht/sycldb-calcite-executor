@@ -28,11 +28,11 @@ void parse_join(const RelNode &rel, TableData<int> &left_table, TableData<int> &
     if (right_table.table_name != "" && table_last_used.at(right_table.table_name) == rel.id)
     {
         filter_join(right_table.columns[right_table.column_indices.at(right_column)].content,
-                    right_table.flags, right_table.col_len,
-                    right_table.columns[right_table.column_indices.at(right_column)].max_value,
-                    right_table.columns[right_table.column_indices.at(right_column)].min_value,
-                    left_table.columns[left_table.column_indices.at(left_column)].content,
-                    left_table.flags, left_table.col_len, queue);
+            right_table.flags, right_table.col_len,
+            right_table.columns[right_table.column_indices.at(right_column)].max_value,
+            right_table.columns[right_table.column_indices.at(right_column)].min_value,
+            left_table.columns[left_table.column_indices.at(left_column)].content,
+            left_table.flags, left_table.col_len, queue);
     }
     else if (left_table.table_name == "lineorder")
     {

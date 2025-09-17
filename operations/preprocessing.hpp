@@ -10,11 +10,11 @@
 #include "../gen-cpp/CalciteServer.h"
 #include "../gen-cpp/calciteserver_types.h"
 
-std::map<std::string, int> table_column_numbers({{"lineorder", 17},
+std::map<std::string, int> table_column_numbers({ {"lineorder", 17},
                                                  {"part", 9},
                                                  {"supplier", 7},
                                                  {"customer", 8},
-                                                 {"ddate", 17}});
+                                                 {"ddate", 17} });
 
 struct ExecutionInfo
 {
@@ -245,8 +245,8 @@ ExecutionInfo parse_execution_info(const PlanResult &result)
         {
             int left_id = rel.inputs[0], right_id = rel.inputs[1];
             std::vector<std::tuple<std::string, int>> left_info = ops_info[left_id],
-                                                      right_info = ops_info[right_id],
-                                                      op_info;
+                right_info = ops_info[right_id],
+                op_info;
             std::set<int> columns;
 
             parse_expression_columns(rel.condition, columns);
@@ -259,13 +259,14 @@ ExecutionInfo parse_execution_info(const PlanResult &result)
             {
                 std::string table_name = std::get<0>(
                     (col < left_info.size())
-                        ? left_info[col]
-                        : right_info[col - left_info.size()]);
+                    ? left_info[col]
+                    : right_info[col - left_info.size()]);
 
                 int col_index = std::get<1>(
                     (col < left_info.size())
-                        ? left_info[col]
-                        : right_info[col - left_info.size()]);
+                    ? left_info[col]
+                    : right_info[col - left_info.size()]
+                );
 
                 info.loaded_columns[table_name].insert(col_index);
                 info.table_last_used[table_name] = rel.id;

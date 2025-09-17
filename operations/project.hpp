@@ -51,9 +51,9 @@ void parse_project(const std::vector<ExprType> &exprs, TableData<int> &table_dat
                 exprs[i].operands[1].exprType == ExprOption::COLUMN)
             {
                 perform_operation(new_columns[i].content,
-                                  table_data.columns[table_data.column_indices.at(exprs[i].operands[0].input)].content,
-                                  table_data.columns[table_data.column_indices.at(exprs[i].operands[1].input)].content,
-                                  table_data.flags, table_data.col_len, exprs[i].op, queue);
+                    table_data.columns[table_data.column_indices.at(exprs[i].operands[0].input)].content,
+                    table_data.columns[table_data.column_indices.at(exprs[i].operands[1].input)].content,
+                    table_data.flags, table_data.col_len, exprs[i].op, queue);
                 // new_columns[i].min_value =
                 //     std::min(table_data.columns[table_data.column_indices.at(exprs[i].operands[0].input)].min_value,
                 //              table_data.columns[table_data.column_indices.at(exprs[i].operands[1].input)].min_value);
@@ -62,31 +62,31 @@ void parse_project(const std::vector<ExprType> &exprs, TableData<int> &table_dat
                 //              table_data.columns[table_data.column_indices.at(exprs[i].operands[1].input)].max_value);
             }
             else if (exprs[i].operands[0].exprType == ExprOption::LITERAL &&
-                     exprs[i].operands[1].exprType == ExprOption::COLUMN)
+                exprs[i].operands[1].exprType == ExprOption::COLUMN)
             {
                 perform_operation(new_columns[i].content,
-                                  (int)exprs[i].operands[0].literal.value,
-                                  table_data.columns[table_data.column_indices.at(exprs[i].operands[1].input)].content,
-                                  table_data.flags, table_data.col_len, exprs[i].op, queue);
+                    (int)exprs[i].operands[0].literal.value,
+                    table_data.columns[table_data.column_indices.at(exprs[i].operands[1].input)].content,
+                    table_data.flags, table_data.col_len, exprs[i].op, queue);
                 // new_columns[i].min_value = table_data.columns[table_data.column_indices.at(exprs[i].operands[1].input)].min_value;
                 // new_columns[i].max_value = table_data.columns[table_data.column_indices.at(exprs[i].operands[1].input)].max_value;
             }
             else if (exprs[i].operands[0].exprType == ExprOption::COLUMN &&
-                     exprs[i].operands[1].exprType == ExprOption::LITERAL)
+                exprs[i].operands[1].exprType == ExprOption::LITERAL)
             {
                 perform_operation(new_columns[i].content,
-                                  table_data.columns[table_data.column_indices.at(exprs[i].operands[0].input)].content,
-                                  (int)exprs[i].operands[1].literal.value,
-                                  table_data.flags, table_data.col_len, exprs[i].op, queue);
+                    table_data.columns[table_data.column_indices.at(exprs[i].operands[0].input)].content,
+                    (int)exprs[i].operands[1].literal.value,
+                    table_data.flags, table_data.col_len, exprs[i].op, queue);
                 // new_columns[i].min_value = table_data.columns[table_data.column_indices.at(exprs[i].operands[0].input)].min_value;
                 // new_columns[i].max_value = table_data.columns[table_data.column_indices.at(exprs[i].operands[0].input)].max_value;
             }
             else
             {
                 std::cout << "Project operation: Unsupported parsing ExprType "
-                          << exprs[i].operands[0].exprType << " and "
-                          << exprs[i].operands[1].exprType
-                          << " for EXPR" << std::endl;
+                    << exprs[i].operands[0].exprType << " and "
+                    << exprs[i].operands[1].exprType
+                    << " for EXPR" << std::endl;
                 return;
             }
             break;

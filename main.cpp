@@ -26,6 +26,9 @@ using namespace apache::thrift::transport;
 
 #define MAX_NTABLES 5
 
+#define PERFORMANCE_MEASUREMENT_ACTIVE 1
+#define PERFORMANCE_REPETITIONS 600
+
 void print_result(const TableData<int> &table_data)
 {
     int res_count = 0;
@@ -69,36 +72,45 @@ void save_result(const TableData<int> &table_data, const std::string &data_path)
     outfile.close();
 }
 
-void execute_result(const PlanResult &result, const std::string &data_path)
+std::chrono::duration<double, std::milli> execute_result(const PlanResult &result, const std::string &data_path)
 {
-    sycl::queue queue{sycl::gpu_selector_v};
+    sycl::queue queue{ sycl::gpu_selector_v };
+    #if not PERFORMANCE_MEASUREMENT_ACTIVE
     std::cout << "Running on: " << queue.get_device().get_info<sycl::info::device::name>() << std::endl;
+    #endif
+
     TableData<int> tables[MAX_NTABLES];
     int current_table = 0,
         *output_table = sycl::malloc_host<int>(result.rels.size(), queue); // used to track the output table of each operation, in order to be referenced in the joins. other operation types just use the previous output table
     ExecutionInfo exec_info = parse_execution_info(result);
     std::vector<void *> resources; // used to track allocated resources for freeing at the end
-    resources.reserve(100);        // high enough to avoid multiple reallocations
+    resources.reserve(500);        // high enough to avoid multiple reallocations
 
     for (const RelNode &rel : result.rels)
     {
         if (rel.relOp != RelNodeType::TABLE_SCAN)
             continue;
+
+        #if not PERFORMANCE_MEASUREMENT_ACTIVE
         std::cout << "Table Scan on: " << rel.tables[1] << std::endl;
+        #endif
+
         if (exec_info.loaded_columns.find(rel.tables[1]) == exec_info.loaded_columns.end())
         {
-            std::cout << "Table " << rel.tables[1] << " was never loaded." << std::endl;
-            return;
+            std::cerr << "Table " << rel.tables[1] << " was never loaded." << std::endl;
+            return std::chrono::duration<double, std::milli>::zero();
         }
 
         const std::set<int> &column_idxs = exec_info.loaded_columns[rel.tables[1]];
-        tables[current_table] = loadTable(rel.tables[1], table_column_numbers[rel.tables[1]], column_idxs, queue);
+        tables[current_table] = loadTable(rel.tables[1], table_column_numbers[rel.tables[1]], column_idxs, resources, queue);
         tables[current_table].table_name = rel.tables[1];
         if (exec_info.group_by_columns.find(rel.tables[1]) != exec_info.group_by_columns.end())
             tables[current_table].group_by_column = exec_info.group_by_columns[rel.tables[1]];
         output_table[rel.id] = current_table;
         current_table++;
     }
+
+    queue.wait();
 
     auto start = std::chrono::high_resolution_clock::now();
 
@@ -111,52 +123,87 @@ void execute_result(const PlanResult &result, const std::string &data_path)
             break;
         case RelNodeType::FILTER:
         {
+            #if not PERFORMANCE_MEASUREMENT_ACTIVE
             auto start_filter = std::chrono::high_resolution_clock::now();
+            #endif
+
             parse_filter(rel.condition, tables[output_table[rel.id - 1]], "", queue);
             output_table[rel.id] = output_table[rel.id - 1];
+
+            #if not PERFORMANCE_MEASUREMENT_ACTIVE
             auto end_filter = std::chrono::high_resolution_clock::now();
             std::chrono::duration<double, std::milli> filter_time = end_filter - start_filter;
             std::cout << "Filter operation (" << filter_time.count() << " ms)" << std::endl;
+            #endif
+
             break;
         }
         case RelNodeType::PROJECT:
         {
+            #if not PERFORMANCE_MEASUREMENT_ACTIVE
             auto start_project = std::chrono::high_resolution_clock::now();
+            #endif
+
             parse_project(rel.exprs, tables[output_table[rel.id - 1]], queue, resources);
             output_table[rel.id] = output_table[rel.id - 1];
+
+            #if not PERFORMANCE_MEASUREMENT_ACTIVE
             auto end_project = std::chrono::high_resolution_clock::now();
             std::chrono::duration<double, std::milli> project_time = end_project - start_project;
             std::cout << "Project operation (" << project_time.count() << " ms)" << std::endl;
+            #endif
+
             break;
         }
         case RelNodeType::AGGREGATE:
         {
+            #if not PERFORMANCE_MEASUREMENT_ACTIVE
             auto start_aggregate = std::chrono::high_resolution_clock::now();
+            #endif
+
             parse_aggregate(tables[output_table[rel.id - 1]], rel.aggs[0], rel.group, queue, resources);
             output_table[rel.id] = output_table[rel.id - 1];
+
+            #if not PERFORMANCE_MEASUREMENT_ACTIVE
             auto end_aggregate = std::chrono::high_resolution_clock::now();
             std::chrono::duration<double, std::milli> aggregate_time = end_aggregate - start_aggregate;
             std::cout << "Aggregate operation (" << aggregate_time.count() << " ms)" << std::endl;
+            #endif
+
             break;
         }
         case RelNodeType::JOIN:
         {
+            #if not PERFORMANCE_MEASUREMENT_ACTIVE
             auto start_join = std::chrono::high_resolution_clock::now();
+            #endif
+
             parse_join(rel, tables[output_table[rel.inputs[0]]], tables[output_table[rel.inputs[1]]], exec_info.table_last_used, queue);
             output_table[rel.id] = output_table[rel.inputs[0]];
+
+            #if not PERFORMANCE_MEASUREMENT_ACTIVE
             auto end_join = std::chrono::high_resolution_clock::now();
             std::chrono::duration<double, std::milli> join_time = end_join - start_join;
             std::cout << "Join operation (" << join_time.count() << " ms)" << std::endl;
+            #endif
+
             break;
         }
         case RelNodeType::SORT:
         {
+            #if not PERFORMANCE_MEASUREMENT_ACTIVE
             auto start_sort = std::chrono::high_resolution_clock::now();
+            #endif
+
             parse_sort(rel, tables[output_table[rel.id - 1]], queue);
             output_table[rel.id] = output_table[rel.id - 1];
+
+            #if not PERFORMANCE_MEASUREMENT_ACTIVE
             auto end_sort = std::chrono::high_resolution_clock::now();
             std::chrono::duration<double, std::milli> sort_time = end_sort - start_sort;
             std::cout << "Sort operation (" << sort_time.count() << " ms)" << std::endl;
+            #endif
+
             break;
         }
         default:
@@ -168,7 +215,9 @@ void execute_result(const PlanResult &result, const std::string &data_path)
     auto end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double, std::milli> exec_time = end - start;
 
+    #if not PERFORMANCE_MEASUREMENT_ACTIVE
     std::cout << "Execution time: " << exec_time.count() << " ms" << std::endl;
+    #endif
 
     TableData<int> &final_table = tables[output_table[result.rels.size() - 1]];
     for (int i = 0; i < final_table.columns_size; i++)
@@ -199,10 +248,12 @@ void execute_result(const PlanResult &result, const std::string &data_path)
     sycl::free(final_table.flags, queue);
     final_table.flags = host_flags;
 
+    #if not PERFORMANCE_MEASUREMENT_ACTIVE
     // print_result(final_table);
     save_result(final_table, data_path);
 
     start = std::chrono::high_resolution_clock::now();
+    #endif
 
     for (int i = 0; i < current_table; i++)
     {
@@ -217,9 +268,13 @@ void execute_result(const PlanResult &result, const std::string &data_path)
     for (void *res : resources)
         sycl::free(res, queue);
 
+    #if not PERFORMANCE_MEASUREMENT_ACTIVE
     end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double, std::milli> free_time = end - start;
     std::cout << "Free resources time: " << free_time.count() << " ms" << std::endl;
+    #endif
+
+    return exec_time;
 }
 
 int main(int argc, char **argv)
@@ -240,7 +295,7 @@ int main(int argc, char **argv)
         }
 
         sql.assign((std::istreambuf_iterator<char>(file)),
-                   std::istreambuf_iterator<char>());
+            std::istreambuf_iterator<char>());
 
         file.close();
     }
@@ -258,13 +313,41 @@ int main(int argc, char **argv)
         // std::cout << "SQL Query: " << sql << std::endl;
         transport->open();
         std::cout << "Transport opened successfully." << std::endl;
+
+        #if PERFORMANCE_MEASUREMENT_ACTIVE
+        std::string sql_filename = argv[1];
+        std::string query_name = sql_filename.substr(sql_filename.find_last_of("/") + 1, 3);
+        std::ofstream perf_file(query_name + "-performance.log", std::ios::out | std::ios::trunc);
+        if (!perf_file.is_open())
+        {
+            std::cerr << "Could not open performance log file: " << query_name << "-performance.log" << std::endl;
+            return 1;
+        }
+
+        for (int i = 0; i < PERFORMANCE_REPETITIONS; i++)
+        {
+            PlanResult result;
+
+            auto start = std::chrono::high_resolution_clock::now();
+            client.parse(result, sql);
+            auto exec_time = execute_result(result, argv[1]);
+            auto end = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double, std::milli> total_time = end - start;
+
+            perf_file << exec_time.count() << '\n';
+            std::cout << "Repetition " << i + 1 << "/" << PERFORMANCE_REPETITIONS
+                << " - " << exec_time.count() << " ms - "
+                << total_time.count() << " ms" << std::endl;
+        }
+        perf_file.close();
+        #else
         PlanResult result;
         client.parse(result, sql);
 
         // std::cout << "Result: " << result << std::endl;
 
         execute_result(result, argv[1]);
-        // execute_result(result, argv[1]);
+        #endif
 
         // client.shutdown();
 

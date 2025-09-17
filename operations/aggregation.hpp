@@ -14,8 +14,9 @@ void parse_aggregate(TableData<int> &table_data, const AggType &agg, const std::
     if (group.size() == 0)
     {
         uint64_t *result = sycl::malloc_device<uint64_t>(1, queue);
-        aggregate_operation(result, table_data.columns[table_data.column_indices.at(agg.operands[0])].content,
-                            table_data.flags, table_data.col_len, agg.agg, queue);
+        aggregate_operation(result,
+            table_data.columns[table_data.column_indices.at(agg.operands[0])].content,
+            table_data.flags, table_data.col_len, agg.agg, queue);
         // Free old columns and replace with the result column
         for (int i = 0; i < table_data.columns_size; i++)
             if (table_data.columns[i].has_ownership)
@@ -42,10 +43,13 @@ void parse_aggregate(TableData<int> &table_data, const AggType &agg, const std::
         ColumnData<int> *group_columns = sycl::malloc_shared<ColumnData<int>>(group.size(), queue);
         for (int i = 0; i < group.size(); i++)
             group_columns[i] = table_data.columns[table_data.column_indices.at(group[i])];
-        std::tuple<int *, unsigned long long, bool *, uint64_t *> agg_res = group_by_aggregate(
-            group_columns,
-            table_data.columns[table_data.column_indices.at(agg.operands[0])].content,
-            table_data.flags, group.size(), table_data.col_len, agg.agg, queue);
+
+        std::tuple<int *, unsigned long long, bool *, uint64_t *> agg_res =
+            group_by_aggregate(
+                group_columns,
+                table_data.columns[table_data.column_indices.at(agg.operands[0])].content,
+                table_data.flags, group.size(), table_data.col_len, agg.agg, queue);
+
         resources.push_back(group_columns);
 
         // Free old columns and replace with the result columns
@@ -61,8 +65,8 @@ void parse_aggregate(TableData<int> &table_data, const AggType &agg, const std::
         {
             table_data.columns[i].content = sycl::malloc_device<int>(std::get<1>(agg_res), queue);
             queue.memcpy(table_data.columns[i].content,
-                         std::get<0>(agg_res) + i * std::get<1>(agg_res),
-                         std::get<1>(agg_res) * sizeof(int))
+                std::get<0>(agg_res) + i * std::get<1>(agg_res),
+                std::get<1>(agg_res) * sizeof(int))
                 .wait();
             table_data.columns[i].has_ownership = true;
             table_data.columns[i].is_aggregate_result = false;

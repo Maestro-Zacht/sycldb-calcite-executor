@@ -20,9 +20,11 @@ bool is_filter_logical(const std::string &op)
     return true;
 }
 
-void parse_filter(const ExprType &expr,
-                  const TableData<int> table_data,
-                  std::string parent_op, sycl::queue &queue)
+void parse_filter(
+    const ExprType &expr,
+    const TableData<int> table_data,
+    std::string parent_op,
+    sycl::queue &queue)
 {
     // Recursive parsing of EXRP types. LITERAL and COLUMN are handled in parent EXPR type.
     if (expr.exprType != ExprOption::EXPR)
@@ -42,11 +44,11 @@ void parse_filter(const ExprType &expr,
                 upper = std::stoi(expr.operands[1].literal.rangeSet[0][2]);
 
             selection(local_flags,
-                      table_data.columns[col_index].content,
-                      ">=", lower, "NONE", table_data.col_len, queue);
+                table_data.columns[col_index].content,
+                ">=", lower, "NONE", table_data.col_len, queue);
             selection(local_flags,
-                      table_data.columns[col_index].content,
-                      "<=", upper, "AND", table_data.col_len, queue);
+                table_data.columns[col_index].content,
+                "<=", upper, "AND", table_data.col_len, queue);
 
             table_data.columns[col_index].min_value = lower;
             table_data.columns[col_index].max_value = upper;
@@ -57,21 +59,21 @@ void parse_filter(const ExprType &expr,
                 second = std::stoi(expr.operands[1].literal.rangeSet[1][1]);
 
             selection(local_flags,
-                      table_data.columns[col_index].content,
-                      "==", first, "NONE", table_data.col_len, queue);
+                table_data.columns[col_index].content,
+                "==", first, "NONE", table_data.col_len, queue);
             selection(local_flags,
-                      table_data.columns[col_index].content,
-                      "==", second, "OR", table_data.col_len, queue);
+                table_data.columns[col_index].content,
+                "==", second, "OR", table_data.col_len, queue);
         }
         bool *flags = table_data.flags;
         logical_op logic = get_logical_op(parent_op);
         queue.parallel_for(
-                 table_data.col_len,
-                 [=](sycl::id<1> idx)
-                 {
-                     flags[idx[0]] = logical(logic, flags[idx[0]], local_flags[idx[0]]);
-                 })
-            .wait();
+            table_data.col_len,
+            [=](sycl::id<1> idx)
+            {
+                flags[idx[0]] = logical(logic, flags[idx[0]], local_flags[idx[0]]);
+            }
+        ).wait();
         sycl::free(local_flags, queue);
     }
     else if (is_filter_logical(expr.op))
@@ -111,9 +113,9 @@ void parse_filter(const ExprType &expr,
                 break;
             default:
                 std::cout << "Filter condition: Unsupported parsing ExprType "
-                          << expr.operands[i].exprType
-                          << " for comparison operand"
-                          << std::endl;
+                    << expr.operands[i].exprType
+                    << " for comparison operand"
+                    << std::endl;
                 break;
             }
         }
