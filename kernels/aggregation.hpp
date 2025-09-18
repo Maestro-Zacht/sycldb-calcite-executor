@@ -133,13 +133,20 @@ sycl::event perform_operation(
 }
 
 template <typename T, typename U>
-void aggregate_operation(U *result, const T a[], bool flags[], int size, const std::string &op, sycl::queue &queue)
+sycl::event aggregate_operation(
+    U *result,
+    const T a[],
+    bool flags[],
+    int size,
+    const std::string &op,
+    sycl::queue &queue,
+    const std::vector<sycl::event> &dependencies)
 {
     #if PRINT_AGGREGATE_DEBUG_INFO
     auto start = std::chrono::high_resolution_clock::now();
     #endif
 
-    queue.memset(result, 0, sizeof(U)).wait();
+    auto e1 = queue.memset(result, 0, sizeof(U));
 
     #if PRINT_AGGREGATE_DEBUG_INFO
     auto end = std::chrono::high_resolution_clock::now();
@@ -149,37 +156,48 @@ void aggregate_operation(U *result, const T a[], bool flags[], int size, const s
     start = std::chrono::high_resolution_clock::now();
     #endif
 
-    queue.parallel_for(
-        size,
-        sycl::reduction(result, sycl::plus<>()),
-        [=](sycl::id<1> idx, auto &sum)
+    auto e2 = queue.submit(
+        [&](sycl::handler &cgh)
         {
-            if (flags[idx])
-                sum.combine(a[idx]);
+            cgh.depends_on(dependencies);
+            cgh.depends_on(e1);
+            cgh.parallel_for(
+                sycl::range<1>(size),
+                sycl::reduction(result, sycl::plus<>()),
+                [=](sycl::id<1> idx, auto &sum)
+                {
+                    if (flags[idx])
+                        sum.combine(a[idx]);
+                }
+            );
         }
-    ).wait();
+    );
 
     #if PRINT_AGGREGATE_DEBUG_INFO
     end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double, std::milli> kernel_time = end - start;
     std::cout << "Aggregate kernel time: " << kernel_time.count() << " ms" << std::endl;
     #endif
+
+    return e2;
 }
 
-/*unsigned long long aggregate_operation(const int a[], bool flags[], int size, const std::string &op, sycl::queue &queue)
-{
-    unsigned long long result = 0;
-    unsigned long long *d_result = sycl::malloc_device<unsigned long long>(1, queue);
-    queue.memset(d_result, 0, sizeof(unsigned long long)).wait();
-    queue.parallel_for(size, sycl::reduction(d_result, sycl::plus<>()), [=](sycl::id<1> idx, auto &sum) {
-        if (flags[idx]) { sum.combine(a[idx]); }
-    });
-    queue.memcpy(&result, d_result, sizeof(unsigned long long)).wait();
-    sycl::free(d_result, queue);
-    return result;
-}*/
-
-std::tuple<int *, unsigned long long, bool *, uint64_t *> group_by_aggregate(ColumnData<int> *group_columns, int *agg_column, bool *flags, int col_num, int col_len, const std::string &agg_op, sycl::queue &queue)
+std::tuple<
+    int *,
+    unsigned long long,
+    bool *,
+    uint64_t *,
+    sycl::event
+> group_by_aggregate(
+    ColumnData<int> *group_columns,
+    int *agg_column,
+    bool *flags,
+    int col_num,
+    int col_len,
+    const std::string &agg_op,
+    std::vector<void *> &resources,
+    sycl::queue &queue,
+    const std::vector<sycl::event> &dependencies)
 {
     unsigned long long prod_ranges = 1;
 
@@ -189,53 +207,61 @@ std::tuple<int *, unsigned long long, bool *, uint64_t *> group_by_aggregate(Col
     }
 
     int *results = sycl::malloc_device<int>(col_num * prod_ranges, queue);
-    queue.fill(results, 0, col_num * prod_ranges);
+    auto e1 = queue.fill(results, 0, col_num * prod_ranges);
 
     uint64_t *agg_result = sycl::malloc_device<uint64_t>(prod_ranges, queue);
-    queue.fill(agg_result, (uint64_t)0, prod_ranges);
+    auto e2 = queue.fill(agg_result, (uint64_t)0, prod_ranges);
 
     unsigned *res_flags = sycl::malloc_device<unsigned>(prod_ranges, queue);
-    queue.fill(res_flags, (unsigned)0, prod_ranges);
+    auto e3 = queue.fill(res_flags, (unsigned)0, prod_ranges);
 
-    queue.wait();
 
-    queue.parallel_for(
-        col_len,
-        [=](sycl::id<1> idx)
+    auto e4 = queue.submit(
+        [&](sycl::handler &cgh)
         {
-            auto i = idx[0];
-            if (flags[i])
-            {
-                int hash = 0, mult = 1;
-                for (int j = 0; j < col_num; j++)
+            cgh.depends_on(dependencies);
+            cgh.depends_on(e1);
+            cgh.depends_on(e2);
+            cgh.depends_on(e3);
+            cgh.parallel_for(
+                col_len,
+                [=](sycl::id<1> idx)
                 {
-                    hash += (group_columns[j].content[i] - group_columns[j].min_value) * mult;
-                    mult *= group_columns[j].max_value - group_columns[j].min_value + 1;
-                }
-                hash %= prod_ranges;
+                    auto i = idx[0];
+                    if (flags[i])
+                    {
+                        int hash = 0, mult = 1;
+                        for (int j = 0; j < col_num; j++)
+                        {
+                            hash += (group_columns[j].content[i] - group_columns[j].min_value) * mult;
+                            mult *= group_columns[j].max_value - group_columns[j].min_value + 1;
+                        }
+                        hash %= prod_ranges;
 
-                sycl::atomic_ref<
-                    unsigned,
-                    sycl::memory_order::relaxed,
-                    sycl::memory_scope::device,
-                    sycl::access::address_space::global_space
-                > flag_obj(res_flags[hash]);
-                if (flag_obj.fetch_add(1) == 0)
-                {
-                    for (int j = 0; j < col_num; j++)
-                        results[j * prod_ranges + hash] = group_columns[j].content[i];
-                }
+                        sycl::atomic_ref<
+                            unsigned,
+                            sycl::memory_order::relaxed,
+                            sycl::memory_scope::device,
+                            sycl::access::address_space::global_space
+                        > flag_obj(res_flags[hash]);
+                        if (flag_obj.fetch_add(1) == 0)
+                        {
+                            for (int j = 0; j < col_num; j++)
+                                results[j * prod_ranges + hash] = group_columns[j].content[i];
+                        }
 
-                // if (agg_op == "SUM")
-                auto sum_obj =
-                    sycl::atomic_ref<uint64_t,
-                    sycl::memory_order::relaxed,
-                    sycl::memory_scope::device,
-                    sycl::access::address_space::global_space>(agg_result[hash]);
-                sum_obj.fetch_add(agg_column[i]);
-            }
+                        // if (agg_op == "SUM")
+                        auto sum_obj =
+                            sycl::atomic_ref<uint64_t,
+                            sycl::memory_order::relaxed,
+                            sycl::memory_scope::device,
+                            sycl::access::address_space::global_space>(agg_result[hash]);
+                        sum_obj.fetch_add(agg_column[i]);
+                    }
+                }
+            );
         }
-    ).wait();
+    );
 
     // for (int i = 0; i < prod_ranges; i++)
     //     std::cout << i << " :: " << agg_result[i] << std::endl;
@@ -283,14 +309,20 @@ std::tuple<int *, unsigned long long, bool *, uint64_t *> group_by_aggregate(Col
     // }
 
     bool *final_flags = sycl::malloc_device<bool>(prod_ranges, queue);
-    queue.parallel_for(
-        prod_ranges,
-        [=](sycl::id<1> idx)
+    auto e5 = queue.submit(
+        [&](sycl::handler &cgh)
         {
-            final_flags[idx] = res_flags[idx] != 0;
+            cgh.depends_on(e4);
+            cgh.parallel_for(
+                prod_ranges,
+                [=](sycl::id<1> idx)
+                {
+                    final_flags[idx] = res_flags[idx] != 0;
+                }
+            );
         }
-    ).wait();
-    sycl::free(res_flags, queue);
+    );
+    resources.push_back(res_flags);
 
-    return std::make_tuple(results, prod_ranges, final_flags, agg_result);
+    return std::make_tuple(results, prod_ranges, final_flags, agg_result, e5);
 }

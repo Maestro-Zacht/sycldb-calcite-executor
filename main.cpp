@@ -26,7 +26,7 @@ using namespace apache::thrift::transport;
 
 #define MAX_NTABLES 5
 
-#define PERFORMANCE_MEASUREMENT_ACTIVE 1
+#define PERFORMANCE_MEASUREMENT_ACTIVE 0
 #define PERFORMANCE_REPETITIONS 200
 
 void print_result(const TableData<int> &table_data)
@@ -164,7 +164,7 @@ std::chrono::duration<double, std::milli> execute_result(const PlanResult &resul
             auto start_aggregate = std::chrono::high_resolution_clock::now();
             #endif
 
-            parse_aggregate(tables[output_table[rel.id - 1]], rel.aggs[0], rel.group, queue, resources);
+            dependencies[rel.id] = parse_aggregate(tables[output_table[rel.id - 1]], rel.aggs[0], rel.group, resources, queue, dependencies[rel.id - 1]);
             output_table[rel.id] = output_table[rel.id - 1];
 
             #if not PERFORMANCE_MEASUREMENT_ACTIVE
