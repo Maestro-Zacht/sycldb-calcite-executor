@@ -84,43 +84,63 @@ inline bool logical(logical_op logic, bool a, bool b)
 }
 
 template <typename T>
-void selection(bool flags[], T arr[], std::string op, T value, std::string parent_op, int col_len, sycl::queue &queue)
+sycl::event selection(
+    bool flags[],
+    T arr[],
+    std::string op,
+    T value,
+    std::string parent_op,
+    int col_len,
+    sycl::queue &queue,
+    const std::vector<sycl::event> deps)
 {
     comp_op comparison = get_comp_op(op);
     logical_op logic = get_logical_op(parent_op);
 
-    // for (int i = 0; i < col_len; i++)
-    //     flags[i] = logical(logic, flags[i], compare(comparison, arr[i], value));
-
-    queue.parallel_for(
-        col_len,
-        [=](sycl::id<1> idx)
+    return queue.submit(
+        [&](sycl::handler &cgh)
         {
-            flags[idx] = logical(logic, flags[idx], compare(comparison, arr[idx], value));
+            cgh.depends_on(deps);
+            cgh.parallel_for(
+                col_len,
+                [=](sycl::id<1> idx)
+                {
+                    flags[idx] = logical(logic, flags[idx], compare(comparison, arr[idx], value));
+                }
+            );
         }
     );
-    queue.wait();
 
     // std::cout << "Running selection with comparison: " << op << " and parent op " << parent_op << std::endl;
 }
 
 template <typename T>
-void selection(bool flags[], T operand1[], std::string op, T operand2[], std::string parent_op, int col_len, sycl::queue &queue)
+sycl::event selection(
+    bool flags[],
+    T operand1[],
+    std::string op,
+    T operand2[],
+    std::string parent_op,
+    int col_len,
+    sycl::queue &queue,
+    const std::vector<sycl::event> deps)
 {
     comp_op comparison = get_comp_op(op);
     logical_op logic = get_logical_op(parent_op);
 
-    // for (int i = 0; i < col_len; i++)
-    //     flags[i] = logical(logic, flags[i], compare(comparison, operand1[i], operand2[i]));
-
-    queue.parallel_for(
-        col_len,
-        [=](sycl::id<1> idx)
+    return queue.submit(
+        [&](sycl::handler &cgh)
         {
-            flags[idx] = logical(logic, flags[idx], compare(comparison, operand1[idx], operand2[idx]));
+            cgh.depends_on(deps);
+            cgh.parallel_for(
+                col_len,
+                [=](sycl::id<1> idx)
+                {
+                    flags[idx] = logical(logic, flags[idx], compare(comparison, operand1[idx], operand2[idx]));
+                }
+            );
         }
     );
-    queue.wait();
 
     // std::cout << "Running selection with comparison: " << op << " and parent op " << parent_op << std::endl;
 }

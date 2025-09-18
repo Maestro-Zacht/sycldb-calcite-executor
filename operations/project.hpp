@@ -9,9 +9,16 @@
 
 #include "../gen-cpp/calciteserver_types.h"
 
-void parse_project(const std::vector<ExprType> &exprs, TableData<int> &table_data, sycl::queue &queue, std::vector<void *> &resources)
+std::vector<sycl::event> parse_project(
+    const std::vector<ExprType> &exprs,
+    TableData<int> &table_data,
+    std::vector<void *> &resources,
+    sycl::queue &queue,
+    const std::vector<sycl::event> &dependencies)
 {
     ColumnData<int> *new_columns = sycl::malloc_shared<ColumnData<int>>(exprs.size(), queue);
+
+    std::vector<sycl::event> events(dependencies);
 
     for (size_t i = 0; i < exprs.size(); i++)
     {
@@ -28,7 +35,9 @@ void parse_project(const std::vector<ExprType> &exprs, TableData<int> &table_dat
         case ExprOption::LITERAL:
             // create a new column with the literal value
             new_columns[i].content = sycl::malloc_device<int>(table_data.col_len, queue); // device
-            queue.fill(new_columns[i].content, (int)exprs[i].literal.value, table_data.col_len).wait();
+            events = {
+                queue.fill(new_columns[i].content, (int)exprs[i].literal.value, table_data.col_len, std::move(events))
+            };
             new_columns[i].min_value = exprs[i].literal.value;
             new_columns[i].max_value = exprs[i].literal.value;
             new_columns[i].has_ownership = true;
@@ -38,8 +47,8 @@ void parse_project(const std::vector<ExprType> &exprs, TableData<int> &table_dat
             // Assumed only 2 operands which are either COLUMN or LITERAL
             if (exprs[i].operands.size() != 2)
             {
-                std::cout << "Project operation: Unsupported number of operands for EXPR" << std::endl;
-                return;
+                std::cerr << "Project operation: Unsupported number of operands for EXPR" << std::endl;
+                return {};
             }
             new_columns[i].content = sycl::malloc_device<int>(table_data.col_len, queue); // device
             new_columns[i].has_ownership = true;
@@ -50,10 +59,11 @@ void parse_project(const std::vector<ExprType> &exprs, TableData<int> &table_dat
             if (exprs[i].operands[0].exprType == ExprOption::COLUMN &&
                 exprs[i].operands[1].exprType == ExprOption::COLUMN)
             {
-                perform_operation(new_columns[i].content,
+                events = { perform_operation(new_columns[i].content,
                     table_data.columns[table_data.column_indices.at(exprs[i].operands[0].input)].content,
                     table_data.columns[table_data.column_indices.at(exprs[i].operands[1].input)].content,
-                    table_data.flags, table_data.col_len, exprs[i].op, queue);
+                    table_data.flags, table_data.col_len, exprs[i].op, queue, std::move(events)
+                ) };
                 // new_columns[i].min_value =
                 //     std::min(table_data.columns[table_data.column_indices.at(exprs[i].operands[0].input)].min_value,
                 //              table_data.columns[table_data.column_indices.at(exprs[i].operands[1].input)].min_value);
@@ -64,30 +74,30 @@ void parse_project(const std::vector<ExprType> &exprs, TableData<int> &table_dat
             else if (exprs[i].operands[0].exprType == ExprOption::LITERAL &&
                 exprs[i].operands[1].exprType == ExprOption::COLUMN)
             {
-                perform_operation(new_columns[i].content,
+                events = { perform_operation(new_columns[i].content,
                     (int)exprs[i].operands[0].literal.value,
                     table_data.columns[table_data.column_indices.at(exprs[i].operands[1].input)].content,
-                    table_data.flags, table_data.col_len, exprs[i].op, queue);
+                    table_data.flags, table_data.col_len, exprs[i].op, queue, std::move(events)) };
                 // new_columns[i].min_value = table_data.columns[table_data.column_indices.at(exprs[i].operands[1].input)].min_value;
                 // new_columns[i].max_value = table_data.columns[table_data.column_indices.at(exprs[i].operands[1].input)].max_value;
             }
             else if (exprs[i].operands[0].exprType == ExprOption::COLUMN &&
                 exprs[i].operands[1].exprType == ExprOption::LITERAL)
             {
-                perform_operation(new_columns[i].content,
+                events = { perform_operation(new_columns[i].content,
                     table_data.columns[table_data.column_indices.at(exprs[i].operands[0].input)].content,
                     (int)exprs[i].operands[1].literal.value,
-                    table_data.flags, table_data.col_len, exprs[i].op, queue);
+                    table_data.flags, table_data.col_len, exprs[i].op, queue, std::move(events)) };
                 // new_columns[i].min_value = table_data.columns[table_data.column_indices.at(exprs[i].operands[0].input)].min_value;
                 // new_columns[i].max_value = table_data.columns[table_data.column_indices.at(exprs[i].operands[0].input)].max_value;
             }
             else
             {
-                std::cout << "Project operation: Unsupported parsing ExprType "
+                std::cerr << "Project operation: Unsupported parsing ExprType "
                     << exprs[i].operands[0].exprType << " and "
                     << exprs[i].operands[1].exprType
                     << " for EXPR" << std::endl;
-                return;
+                return {};
             }
             break;
         }
@@ -107,4 +117,6 @@ void parse_project(const std::vector<ExprType> &exprs, TableData<int> &table_dat
     table_data.column_indices.clear();
     for (int i = 0; i < table_data.col_number; i++)
         table_data.column_indices[i] = i;
+
+    return events;
 }

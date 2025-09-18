@@ -26,7 +26,7 @@ using namespace apache::thrift::transport;
 
 #define MAX_NTABLES 5
 
-#define PERFORMANCE_MEASUREMENT_ACTIVE 1
+#define PERFORMANCE_MEASUREMENT_ACTIVE 0
 #define PERFORMANCE_REPETITIONS 600
 
 void print_result(const TableData<int> &table_data)
@@ -85,6 +85,7 @@ std::chrono::duration<double, std::milli> execute_result(const PlanResult &resul
     ExecutionInfo exec_info = parse_execution_info(result);
     std::vector<void *> resources; // used to track allocated resources for freeing at the end
     resources.reserve(500);        // high enough to avoid multiple reallocations
+    std::map<int, std::vector<sycl::event>> dependencies; // used to track dependencies between operations
 
     for (const RelNode &rel : result.rels)
     {
@@ -117,9 +118,11 @@ std::chrono::duration<double, std::milli> execute_result(const PlanResult &resul
     for (int id : exec_info.dag_order)
     {
         const RelNode &rel = result.rels[id];
+        queue.wait();
         switch (rel.relOp)
         {
         case RelNodeType::TABLE_SCAN:
+            dependencies[rel.id] = {};
             break;
         case RelNodeType::FILTER:
         {
@@ -127,7 +130,7 @@ std::chrono::duration<double, std::milli> execute_result(const PlanResult &resul
             auto start_filter = std::chrono::high_resolution_clock::now();
             #endif
 
-            parse_filter(rel.condition, tables[output_table[rel.id - 1]], "", queue);
+            dependencies[rel.id] = parse_filter(rel.condition, tables[output_table[rel.id - 1]], "", resources, queue, dependencies[rel.id - 1]);
             output_table[rel.id] = output_table[rel.id - 1];
 
             #if not PERFORMANCE_MEASUREMENT_ACTIVE
@@ -144,7 +147,7 @@ std::chrono::duration<double, std::milli> execute_result(const PlanResult &resul
             auto start_project = std::chrono::high_resolution_clock::now();
             #endif
 
-            parse_project(rel.exprs, tables[output_table[rel.id - 1]], queue, resources);
+            parse_project(rel.exprs, tables[output_table[rel.id - 1]], resources, queue, dependencies[rel.id - 1]);
             output_table[rel.id] = output_table[rel.id - 1];
 
             #if not PERFORMANCE_MEASUREMENT_ACTIVE

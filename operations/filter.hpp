@@ -20,35 +20,40 @@ bool is_filter_logical(const std::string &op)
     return true;
 }
 
-void parse_filter(
+std::vector<sycl::event> parse_filter(
     const ExprType &expr,
     const TableData<int> table_data,
     std::string parent_op,
-    sycl::queue &queue)
+    std::vector<void *> &resources,
+    sycl::queue &queue,
+    const std::vector<sycl::event> &dependencies)
 {
     // Recursive parsing of EXRP types. LITERAL and COLUMN are handled in parent EXPR type.
     if (expr.exprType != ExprOption::EXPR)
     {
-        std::cout << "Filter condition: Unsupported parsing ExprType " << expr.exprType << std::endl;
-        return;
+        std::cerr << "Filter condition: Unsupported parsing ExprType " << expr.exprType << std::endl;
+        return {};
     }
+
+    std::vector<sycl::event> events;
 
     if (expr.op == "SEARCH")
     {
         int col_index = table_data.column_indices.at(expr.operands[0].input);
         bool *local_flags = sycl::malloc_device<bool>(table_data.col_len, queue);
+        sycl::event last_event;
 
         if (expr.operands[1].literal.rangeSet.size() == 1) // range
         {
             int lower = std::stoi(expr.operands[1].literal.rangeSet[0][1]),
                 upper = std::stoi(expr.operands[1].literal.rangeSet[0][2]);
 
-            selection(local_flags,
+            auto e1 = selection(local_flags,
                 table_data.columns[col_index].content,
-                ">=", lower, "NONE", table_data.col_len, queue);
-            selection(local_flags,
+                ">=", lower, "NONE", table_data.col_len, queue, dependencies);
+            last_event = selection(local_flags,
                 table_data.columns[col_index].content,
-                "<=", upper, "AND", table_data.col_len, queue);
+                "<=", upper, "AND", table_data.col_len, queue, { e1 });
 
             table_data.columns[col_index].min_value = lower;
             table_data.columns[col_index].max_value = upper;
@@ -58,34 +63,44 @@ void parse_filter(
             int first = std::stoi(expr.operands[1].literal.rangeSet[0][1]),
                 second = std::stoi(expr.operands[1].literal.rangeSet[1][1]);
 
-            selection(local_flags,
+            auto e1 = selection(local_flags,
                 table_data.columns[col_index].content,
-                "==", first, "NONE", table_data.col_len, queue);
-            selection(local_flags,
+                "==", first, "NONE", table_data.col_len, queue, dependencies);
+            last_event = selection(local_flags,
                 table_data.columns[col_index].content,
-                "==", second, "OR", table_data.col_len, queue);
+                "==", second, "OR", table_data.col_len, queue, { e1 });
         }
         bool *flags = table_data.flags;
         logical_op logic = get_logical_op(parent_op);
-        queue.parallel_for(
-            table_data.col_len,
-            [=](sycl::id<1> idx)
-            {
-                flags[idx[0]] = logical(logic, flags[idx[0]], local_flags[idx[0]]);
-            }
-        ).wait();
-        sycl::free(local_flags, queue);
+        events.push_back(
+            queue.submit(
+                [&](sycl::handler &cgh)
+                {
+                    cgh.depends_on(last_event);
+                    cgh.parallel_for(
+                        table_data.col_len,
+                        [=](sycl::id<1> idx)
+                        {
+                            flags[idx[0]] = logical(logic, flags[idx[0]], local_flags[idx[0]]);
+                        }
+                    );
+                }
+            )
+        );
+        resources.push_back(local_flags);
     }
     else if (is_filter_logical(expr.op))
     {
         // Logical operation between other expressions. Pass parent op to the first then use the current op.
         // TODO: check if passing parent logic is correct in general
         bool parent_op_used = false;
+        std::vector<sycl::event> child_deps(dependencies);
         for (const ExprType &operand : expr.operands)
         {
-            parse_filter(operand, table_data, parent_op_used ? expr.op : parent_op, queue);
+            child_deps = parse_filter(operand, table_data, parent_op_used ? expr.op : parent_op, resources, queue, std::move(child_deps));
             parent_op_used = true;
         }
+        events.insert(events.end(), child_deps.begin(), child_deps.end());
     }
     else
     {
@@ -94,8 +109,8 @@ void parse_filter(
         bool literal = false;
         if (expr.operands.size() != 2)
         {
-            std::cout << "Filter condition: Unsupported number of operands for EXPR" << std::endl;
-            return;
+            std::cerr << "Filter condition: Unsupported number of operands for EXPR" << std::endl;
+            return {};
         }
 
         // Get the pointer to the two columns or make a new column with the literal value as first cell
@@ -112,23 +127,28 @@ void parse_filter(
                 cols[i][0] = expr.operands[i].literal.value;
                 break;
             default:
-                std::cout << "Filter condition: Unsupported parsing ExprType "
+                std::cerr << "Filter condition: Unsupported parsing ExprType "
                     << expr.operands[i].exprType
                     << " for comparison operand"
                     << std::endl;
-                break;
+                return {};
             }
         }
 
         // Assumed literal is always the second operand.
         if (literal)
         {
-            selection(table_data.flags, cols[0], expr.op, cols[1][0], parent_op, table_data.col_len, queue);
+            events.push_back(
+                selection(table_data.flags, cols[0], expr.op, cols[1][0], parent_op, table_data.col_len, queue, dependencies)
+            );
             delete[] cols[1];
         }
         else
-            selection(table_data.flags, cols[0], expr.op, cols[1], parent_op, table_data.col_len, queue);
+            events.push_back(
+                selection(table_data.flags, cols[0], expr.op, cols[1], parent_op, table_data.col_len, queue, dependencies)
+            );
 
         delete[] cols;
     }
+    return events;
 }

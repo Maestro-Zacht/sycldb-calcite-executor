@@ -46,47 +46,90 @@ BinaryOp get_op_from_string(const std::string &op)
 }
 
 template <typename T>
-void perform_operation(T result[], const T a[], const T b[], bool flags[], int size, const std::string &op, sycl::queue &queue)
+sycl::event perform_operation(
+    T result[],
+    const T a[],
+    const T b[],
+    bool flags[],
+    int size,
+    const std::string &op,
+    sycl::queue &queue,
+    const std::vector<sycl::event> &dependencies)
 {
-    // for (int i = 0; i < size; i++)
     BinaryOp op_enum = get_op_from_string(op);
-    queue.parallel_for(
-        size,
-        [=](sycl::id<1> i)
+
+    return queue.submit(
+        [&](sycl::handler &cgh)
         {
-            if (flags[i])
-                result[i] = element_operation(a[i], b[i], op_enum);
+            cgh.depends_on(dependencies);
+            cgh.parallel_for(
+                size,
+                [=](sycl::id<1> i)
+                {
+                    if (flags[i])
+                        result[i] = element_operation(a[i], b[i], op_enum);
+                }
+            );
         }
-    ).wait();
+    );
 }
 
 template <typename T>
-void perform_operation(T result[], T a, const T b[], bool flags[], int size, const std::string &op, sycl::queue &queue)
+sycl::event perform_operation(
+    T result[],
+    T a,
+    const T b[],
+    bool flags[],
+    int size,
+    const std::string &op,
+    sycl::queue &queue,
+    const std::vector<sycl::event> &dependencies)
 {
-    // for (int i = 0; i < size; i++)
     BinaryOp op_enum = get_op_from_string(op);
-    queue.parallel_for(
-        size,
-        [=](sycl::id<1> i)
+
+    return queue.submit(
+        [&](sycl::handler &cgh)
         {
-            if (flags[i])
-                result[i] = element_operation(a, b[i], op_enum);
+            cgh.depends_on(dependencies);
+            cgh.parallel_for(
+                size,
+                [=](sycl::id<1> i)
+                {
+                    if (flags[i])
+                        result[i] = element_operation(a, b[i], op_enum);
+                }
+            );
         }
-    ).wait();
+    );
 }
 
 template <typename T>
-void perform_operation(T result[], const T a[], T b, bool flags[], int size, const std::string &op, sycl::queue &queue)
+sycl::event perform_operation(
+    T result[],
+    const T a[],
+    T b,
+    bool flags[],
+    int size,
+    const std::string &op,
+    sycl::queue &queue,
+    const std::vector<sycl::event> &dependencies)
 {
     BinaryOp op_enum = get_op_from_string(op);
-    queue.parallel_for(
-        size,
-        [=](sycl::id<1> i)
+
+    return queue.submit(
+        [&](sycl::handler &cgh)
         {
-            if (flags[i])
-                result[i] = element_operation(a[i], b, op_enum);
+            cgh.depends_on(dependencies);
+            cgh.parallel_for(
+                size,
+                [=](sycl::id<1> i)
+                {
+                    if (flags[i])
+                        result[i] = element_operation(a[i], b, op_enum);
+                }
+            );
         }
-    ).wait();
+    );
 }
 
 template <typename T, typename U>
