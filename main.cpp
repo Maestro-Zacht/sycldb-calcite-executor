@@ -118,7 +118,6 @@ std::chrono::duration<double, std::milli> execute_result(const PlanResult &resul
     for (int id : exec_info.dag_order)
     {
         const RelNode &rel = result.rels[id];
-        queue.wait();
         switch (rel.relOp)
         {
         case RelNodeType::TABLE_SCAN:
@@ -130,7 +129,14 @@ std::chrono::duration<double, std::milli> execute_result(const PlanResult &resul
             auto start_filter = std::chrono::high_resolution_clock::now();
             #endif
 
-            dependencies[rel.id] = parse_filter(rel.condition, tables[output_table[rel.id - 1]], "", resources, queue, dependencies[rel.id - 1]);
+            dependencies[rel.id] = parse_filter(
+                rel.condition,
+                tables[output_table[rel.id - 1]],
+                "",
+                resources,
+                queue,
+                dependencies[rel.id - 1]
+            );
             output_table[rel.id] = output_table[rel.id - 1];
 
             #if not PERFORMANCE_MEASUREMENT_ACTIVE
@@ -147,7 +153,14 @@ std::chrono::duration<double, std::milli> execute_result(const PlanResult &resul
             auto start_project = std::chrono::high_resolution_clock::now();
             #endif
 
-            parse_project(rel.exprs, tables[output_table[rel.id - 1]], resources, queue, dependencies[rel.id - 1]);
+            dependencies[rel.id] = parse_project(
+                rel.exprs,
+                tables[output_table[rel.id - 1]],
+                resources,
+                queue,
+                dependencies[rel.id - 1]
+            );
+
             output_table[rel.id] = output_table[rel.id - 1];
 
             #if not PERFORMANCE_MEASUREMENT_ACTIVE
@@ -164,7 +177,15 @@ std::chrono::duration<double, std::milli> execute_result(const PlanResult &resul
             auto start_aggregate = std::chrono::high_resolution_clock::now();
             #endif
 
-            dependencies[rel.id] = parse_aggregate(tables[output_table[rel.id - 1]], rel.aggs[0], rel.group, resources, queue, dependencies[rel.id - 1]);
+            dependencies[rel.id] = parse_aggregate(
+                tables[output_table[rel.id - 1]],
+                rel.aggs[0],
+                rel.group,
+                resources,
+                queue,
+                dependencies[rel.id - 1]
+            );
+
             output_table[rel.id] = output_table[rel.id - 1];
 
             #if not PERFORMANCE_MEASUREMENT_ACTIVE
@@ -181,7 +202,20 @@ std::chrono::duration<double, std::milli> execute_result(const PlanResult &resul
             auto start_join = std::chrono::high_resolution_clock::now();
             #endif
 
-            parse_join(rel, tables[output_table[rel.inputs[0]]], tables[output_table[rel.inputs[1]]], exec_info.table_last_used, queue);
+            std::vector<sycl::event> join_dependencies;
+            join_dependencies.insert(join_dependencies.end(), dependencies[rel.inputs[0]].begin(), dependencies[rel.inputs[0]].end());
+            join_dependencies.insert(join_dependencies.end(), dependencies[rel.inputs[1]].begin(), dependencies[rel.inputs[1]].end());
+
+            dependencies[rel.id] = parse_join(
+                rel,
+                tables[output_table[rel.inputs[0]]],
+                tables[output_table[rel.inputs[1]]],
+                exec_info.table_last_used,
+                resources,
+                queue,
+                join_dependencies
+            );
+
             output_table[rel.id] = output_table[rel.inputs[0]];
 
             #if not PERFORMANCE_MEASUREMENT_ACTIVE
@@ -194,6 +228,7 @@ std::chrono::duration<double, std::milli> execute_result(const PlanResult &resul
         }
         case RelNodeType::SORT:
         {
+            queue.wait();
             #if not PERFORMANCE_MEASUREMENT_ACTIVE
             auto start_sort = std::chrono::high_resolution_clock::now();
             #endif
@@ -201,10 +236,14 @@ std::chrono::duration<double, std::milli> execute_result(const PlanResult &resul
             parse_sort(rel, tables[output_table[rel.id - 1]], queue);
             output_table[rel.id] = output_table[rel.id - 1];
 
+            dependencies[rel.id] = {};
+
             #if not PERFORMANCE_MEASUREMENT_ACTIVE
             auto end_sort = std::chrono::high_resolution_clock::now();
             std::chrono::duration<double, std::milli> sort_time = end_sort - start_sort;
-            std::cout << "Sort operation (" << sort_time.count() << " ms)" << std::endl;
+            std::chrono::duration<double, std::milli> exec_no_sort = start_sort - start;
+            std::cout << "Execution time without sort: " << exec_no_sort.count() << " ms\n"
+                << "Sort operation (" << sort_time.count() << " ms)" << std::endl;
             #endif
 
             break;
@@ -215,11 +254,17 @@ std::chrono::duration<double, std::milli> execute_result(const PlanResult &resul
         }
     }
 
+    auto end_before_wait = std::chrono::high_resolution_clock::now();
+
+    queue.wait();
+
     auto end = std::chrono::high_resolution_clock::now();
+
+    std::chrono::duration<double, std::milli> time_before_wait = end_before_wait - start;
     std::chrono::duration<double, std::milli> exec_time = end - start;
 
     #if not PERFORMANCE_MEASUREMENT_ACTIVE
-    std::cout << "Execution time: " << exec_time.count() << " ms" << std::endl;
+    std::cout << "Execution time: " << exec_time.count() << " ms - " << time_before_wait.count() << " ms (before wait)" << std::endl;
     #endif
 
     TableData<int> &final_table = tables[output_table[result.rels.size() - 1]];
