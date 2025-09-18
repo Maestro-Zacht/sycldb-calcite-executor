@@ -26,8 +26,8 @@ using namespace apache::thrift::transport;
 
 #define MAX_NTABLES 5
 
-#define PERFORMANCE_MEASUREMENT_ACTIVE 0
-#define PERFORMANCE_REPETITIONS 600
+#define PERFORMANCE_MEASUREMENT_ACTIVE 1
+#define PERFORMANCE_REPETITIONS 200
 
 void print_result(const TableData<int> &table_data)
 {
