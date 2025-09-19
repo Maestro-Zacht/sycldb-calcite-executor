@@ -201,10 +201,21 @@ std::tuple<
 {
     unsigned long long prod_ranges = 1;
 
+    #if PRINT_AGGREGATE_DEBUG_INFO
+    auto start = std::chrono::high_resolution_clock::now();
+    #endif
+
     for (int i = 0; i < col_num; i++)
     {
         prod_ranges *= group_columns[i].max_value - group_columns[i].min_value + 1;
     }
+
+    #if PRINT_AGGREGATE_DEBUG_INFO
+    auto end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::milli> range_time = end - start;
+    std::cout << "Range calculation time: " << range_time.count() << " ms" << std::endl;
+    start = std::chrono::high_resolution_clock::now();
+    #endif
 
     int *results = sycl::malloc_device<int>(col_num * prod_ranges, queue);
     auto e1 = queue.fill(results, 0, col_num * prod_ranges);
@@ -215,6 +226,12 @@ std::tuple<
     unsigned *res_flags = sycl::malloc_device<unsigned>(prod_ranges, queue);
     auto e3 = queue.fill(res_flags, (unsigned)0, prod_ranges);
 
+    #if PRINT_AGGREGATE_DEBUG_INFO
+    end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::milli> alloc_time = end - start;
+    std::cout << "Allocation and memset time: " << alloc_time.count() << " ms" << std::endl;
+    start = std::chrono::high_resolution_clock::now();
+    #endif
 
     auto e4 = queue.submit(
         [&](sycl::handler &cgh)
@@ -262,6 +279,13 @@ std::tuple<
             );
         }
     );
+
+    #if PRINT_AGGREGATE_DEBUG_INFO
+    end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::milli> kernel_time = end - start;
+    std::cout << "Group by aggregation kernel time: " << kernel_time.count() << " ms" << std::endl;
+    start = std::chrono::high_resolution_clock::now();
+    #endif
 
     // for (int i = 0; i < prod_ranges; i++)
     //     std::cout << i << " :: " << agg_result[i] << std::endl;
@@ -323,6 +347,12 @@ std::tuple<
         }
     );
     resources.push_back(res_flags);
+
+    #if PRINT_AGGREGATE_DEBUG_INFO
+    end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::milli> flag_time = end - start;
+    std::cout << "Final flags kernel time: " << flag_time.count() << " ms" << std::endl;
+    #endif
 
     return std::make_tuple(results, prod_ranges, final_flags, agg_result, e5);
 }

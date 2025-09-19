@@ -17,6 +17,10 @@ std::vector<sycl::event> parse_aggregate(
     sycl::queue &queue,
     const std::vector<sycl::event> &dependencies)
 {
+    #if PRINT_AGGREGATE_DEBUG_INFO
+    auto start = std::chrono::high_resolution_clock::now();
+    #endif
+
     std::vector<sycl::event> events;
     events.reserve(group.size() + 2);
 
@@ -27,6 +31,13 @@ std::vector<sycl::event> parse_aggregate(
             table_data.columns[table_data.column_indices.at(agg.operands[0])].content,
             table_data.flags, table_data.col_len, agg.agg, queue, dependencies));
 
+        #if PRINT_AGGREGATE_DEBUG_INFO
+        auto end = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double, std::milli> total_time = end - start;
+        std::cout << "Total aggregate time (no group by): " << total_time.count() << " ms" << std::endl;
+        start = std::chrono::high_resolution_clock::now();
+        #endif
+
         // Free old columns and replace with the result column
         for (int i = 0; i < table_data.columns_size; i++)
             if (table_data.columns[i].has_ownership)
@@ -34,6 +45,13 @@ std::vector<sycl::event> parse_aggregate(
         resources.push_back(table_data.columns);
         resources.push_back(table_data.flags);
         table_data.column_indices.clear();
+
+        #if PRINT_AGGREGATE_DEBUG_INFO
+        end = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double, std::milli> free_time = end - start;
+        std::cout << "Free old columns time: " << free_time.count() << " ms" << std::endl;
+        start = std::chrono::high_resolution_clock::now();
+        #endif
 
         table_data.columns = sycl::malloc_shared<ColumnData<int>>(1, queue);
         table_data.columns[0].content = (int *)result;
@@ -46,14 +64,34 @@ std::vector<sycl::event> parse_aggregate(
         table_data.col_len = 1;
         table_data.column_indices[0] = 0;
 
+        #if PRINT_AGGREGATE_DEBUG_INFO
+        end = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double, std::milli> alloc_time = end - start;
+        std::cout << "Allocate new column time: " << alloc_time.count() << " ms" << std::endl;
+        start = std::chrono::high_resolution_clock::now();
+        #endif
+
         table_data.flags = sycl::malloc_device<bool>(1, queue);
         events.push_back(queue.fill(table_data.flags, true, 1));
+
+        #if PRINT_AGGREGATE_DEBUG_INFO
+        end = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double, std::milli> flag_time = end - start;
+        std::cout << "Allocate and set flags time: " << flag_time.count() << " ms" << std::endl;
+        #endif
     }
     else
     {
         ColumnData<int> *group_columns = sycl::malloc_shared<ColumnData<int>>(group.size(), queue);
         for (int i = 0; i < group.size(); i++)
             group_columns[i] = table_data.columns[table_data.column_indices.at(group[i])];
+
+        #if PRINT_AGGREGATE_DEBUG_INFO
+        auto end = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double, std::milli> copy_time = end - start;
+        std::cout << "Prepare group columns time: " << copy_time.count() << " ms" << std::endl;
+        start = std::chrono::high_resolution_clock::now();
+        #endif
 
         auto agg_res = group_by_aggregate(
             group_columns,
@@ -63,6 +101,13 @@ std::vector<sycl::event> parse_aggregate(
 
         resources.push_back(group_columns);
 
+        #if PRINT_AGGREGATE_DEBUG_INFO
+        end = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double, std::milli> agg_time = end - start;
+        std::cout << "Total aggregate time (with group by): " << agg_time.count() << " ms" << std::endl;
+        start = std::chrono::high_resolution_clock::now();
+        #endif
+
         // Free old columns and replace with the result columns
         for (int i = 0; i < table_data.columns_size; i++)
             if (table_data.columns[i].has_ownership)
@@ -70,6 +115,13 @@ std::vector<sycl::event> parse_aggregate(
         resources.push_back(table_data.columns);
         resources.push_back(table_data.flags);
         table_data.column_indices.clear();
+
+        #if PRINT_AGGREGATE_DEBUG_INFO
+        end = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double, std::milli> free_time = end - start;
+        std::cout << "Free old columns time: " << free_time.count() << " ms" << std::endl;
+        start = std::chrono::high_resolution_clock::now();
+        #endif
 
         sycl::event agg_event = std::get<4>(agg_res);
 
@@ -87,6 +139,13 @@ std::vector<sycl::event> parse_aggregate(
             table_data.column_indices[i] = i;
         }
 
+        #if PRINT_AGGREGATE_DEBUG_INFO
+        end = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double, std::milli> alloc_time = end - start;
+        std::cout << "Allocate and copy new columns time: " << alloc_time.count() << " ms" << std::endl;
+        start = std::chrono::high_resolution_clock::now();
+        #endif
+
         table_data.columns[group.size()].content = (int *)std::get<3>(agg_res);
         table_data.columns[group.size()].has_ownership = true;
         table_data.columns[group.size()].is_aggregate_result = true;
@@ -100,6 +159,12 @@ std::vector<sycl::event> parse_aggregate(
         table_data.flags = std::get<2>(agg_res);
 
         resources.push_back(std::get<0>(agg_res));
+
+        #if PRINT_AGGREGATE_DEBUG_INFO
+        end = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double, std::milli> flag_time = end - start;
+        std::cout << "Allocate and set new flags time: " << flag_time.count() << " ms" << std::endl;
+        #endif
     }
 
     return events;

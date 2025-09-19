@@ -74,12 +74,14 @@ void save_result(const TableData<int> &table_data, const std::string &data_path)
 
 std::chrono::duration<double, std::milli> execute_result(const PlanResult &result, const std::string &data_path, std::ostream &perf_out = std::cout)
 {
-    sycl::queue queue{ sycl::gpu_selector_v };
+    sycl::queue queue{ sycl::gpu_selector_v, sycl::ext::codeplay::experimental::property::queue::enable_fusion {} };
     #if not PERFORMANCE_MEASUREMENT_ACTIVE
     std::cout << "Running on: " << queue.get_device().get_info<sycl::info::device::name>() << std::endl;
     #else
     bool output_done = false;
     #endif
+    sycl::ext::codeplay::experimental::fusion_wrapper fw{ queue };
+    bool fusion_active = false;
 
     TableData<int> tables[MAX_NTABLES];
     int current_table = 0,
@@ -113,6 +115,13 @@ std::chrono::duration<double, std::milli> execute_result(const PlanResult &resul
         current_table++;
     }
 
+    #if not PERFORMANCE_MEASUREMENT_ACTIVE
+    std::cout << "Execution order: ";
+    for (int id : exec_info.dag_order)
+        std::cout << id << " -> ";
+    std::cout << std::endl;
+    #endif
+
     queue.wait();
 
     auto start = std::chrono::high_resolution_clock::now();
@@ -124,6 +133,11 @@ std::chrono::duration<double, std::milli> execute_result(const PlanResult &resul
         {
         case RelNodeType::TABLE_SCAN:
             dependencies[rel.id] = {};
+            if (rel.tables[1] == "lineorder")
+            {
+                fw.start_fusion();
+                fusion_active = true;
+            }
             break;
         case RelNodeType::FILTER:
         {
@@ -230,6 +244,11 @@ std::chrono::duration<double, std::milli> execute_result(const PlanResult &resul
         }
         case RelNodeType::SORT:
         {
+            if (fusion_active)
+            {
+                fw.complete_fusion(sycl::ext::codeplay::experimental::property::no_barriers {});
+                fusion_active = false;
+            }
             queue.wait();
             auto start_sort = std::chrono::high_resolution_clock::now();
 
@@ -257,6 +276,9 @@ std::chrono::duration<double, std::milli> execute_result(const PlanResult &resul
             break;
         }
     }
+
+    if (fusion_active)
+        fw.complete_fusion(sycl::ext::codeplay::experimental::property::no_barriers {});
 
     auto end_before_wait = std::chrono::high_resolution_clock::now();
 
@@ -372,7 +394,7 @@ int main(int argc, char **argv)
         #if PERFORMANCE_MEASUREMENT_ACTIVE
         std::string sql_filename = argv[1];
         std::string query_name = sql_filename.substr(sql_filename.find_last_of("/") + 1, 3);
-        std::ofstream perf_file(query_name + "-performance.log", std::ios::out | std::ios::trunc);
+        std::ofstream perf_file(query_name + "-performance-fusion.log", std::ios::out | std::ios::trunc);
         if (!perf_file.is_open())
         {
             std::cerr << "Could not open performance log file: " << query_name << "-performance.log" << std::endl;
