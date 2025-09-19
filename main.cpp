@@ -26,8 +26,8 @@ using namespace apache::thrift::transport;
 
 #define MAX_NTABLES 5
 
-#define PERFORMANCE_MEASUREMENT_ACTIVE 0
-#define PERFORMANCE_REPETITIONS 600
+#define PERFORMANCE_MEASUREMENT_ACTIVE 1
+#define PERFORMANCE_REPETITIONS 100
 
 void print_result(const TableData<int> &table_data)
 {
@@ -72,11 +72,13 @@ void save_result(const TableData<int> &table_data, const std::string &data_path)
     outfile.close();
 }
 
-std::chrono::duration<double, std::milli> execute_result(const PlanResult &result, const std::string &data_path)
+std::chrono::duration<double, std::milli> execute_result(const PlanResult &result, const std::string &data_path, std::ostream &perf_file = std::cout)
 {
     sycl::queue queue{ sycl::gpu_selector_v };
     #if not PERFORMANCE_MEASUREMENT_ACTIVE
     std::cout << "Running on: " << queue.get_device().get_info<sycl::info::device::name>() << std::endl;
+    #else
+    bool output_done = false;
     #endif
 
     TableData<int> tables[MAX_NTABLES];
@@ -194,9 +196,7 @@ std::chrono::duration<double, std::milli> execute_result(const PlanResult &resul
         }
         case RelNodeType::SORT:
         {
-            #if not PERFORMANCE_MEASUREMENT_ACTIVE
             auto start_sort = std::chrono::high_resolution_clock::now();
-            #endif
 
             parse_sort(rel, tables[output_table[rel.id - 1]], queue);
             output_table[rel.id] = output_table[rel.id - 1];
@@ -205,6 +205,10 @@ std::chrono::duration<double, std::milli> execute_result(const PlanResult &resul
             auto end_sort = std::chrono::high_resolution_clock::now();
             std::chrono::duration<double, std::milli> sort_time = end_sort - start_sort;
             std::cout << "Sort operation (" << sort_time.count() << " ms)" << std::endl;
+            #else
+            std::chrono::duration<double, std::milli> exec_no_sort = start_sort - start;
+            perf_file << exec_no_sort.count() << '\n';
+            output_done = true;
             #endif
 
             break;
@@ -220,6 +224,9 @@ std::chrono::duration<double, std::milli> execute_result(const PlanResult &resul
 
     #if not PERFORMANCE_MEASUREMENT_ACTIVE
     std::cout << "Execution time: " << exec_time.count() << " ms" << std::endl;
+    #else
+    if (!output_done)
+        perf_file << exec_time.count() << '\n';
     #endif
 
     TableData<int> &final_table = tables[output_table[result.rels.size() - 1]];
@@ -333,11 +340,10 @@ int main(int argc, char **argv)
 
             auto start = std::chrono::high_resolution_clock::now();
             client.parse(result, sql);
-            auto exec_time = execute_result(result, argv[1]);
+            auto exec_time = execute_result(result, argv[1], perf_file);
             auto end = std::chrono::high_resolution_clock::now();
             std::chrono::duration<double, std::milli> total_time = end - start;
 
-            perf_file << exec_time.count() << '\n';
             std::cout << "Repetition " << i + 1 << "/" << PERFORMANCE_REPETITIONS
                 << " - " << exec_time.count() << " ms - "
                 << total_time.count() << " ms" << std::endl;
