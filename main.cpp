@@ -25,7 +25,7 @@ using namespace apache::thrift::protocol;
 using namespace apache::thrift::transport;
 
 #define PERFORMANCE_MEASUREMENT_ACTIVE 1
-#define PERFORMANCE_REPETITIONS 3
+#define PERFORMANCE_REPETITIONS 100
 
 void print_result(const TableData<int> &table_data)
 {
@@ -338,6 +338,7 @@ std::chrono::duration<double, std::milli> execute_result(const PlanResult &resul
         perf_out << exec_time.count() << '\n';
     #endif
 
+    #if not PERFORMANCE_MEASUREMENT_ACTIVE
     TableData<int> &final_table = tables[output_table[result.rels.size() - 1]];
     for (int i = 0; i < final_table.columns_size; i++)
     {
@@ -367,7 +368,6 @@ std::chrono::duration<double, std::milli> execute_result(const PlanResult &resul
     sycl::free(final_table.flags, queue);
     final_table.flags = host_flags;
 
-    #if not PERFORMANCE_MEASUREMENT_ACTIVE
     // print_result(final_table);
     save_result(final_table, data_path);
 
