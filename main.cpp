@@ -189,6 +189,11 @@ std::chrono::duration<double, std::milli> execute_result(const PlanResult &resul
         }
         case RelNodeType::AGGREGATE:
         {
+            if (fusion_active)
+            {
+                fw.complete_fusion(sycl::ext::codeplay::experimental::property::no_barriers {});
+                fusion_active = false;
+            }
             #if not PERFORMANCE_MEASUREMENT_ACTIVE
             auto start_aggregate = std::chrono::high_resolution_clock::now();
             #endif
