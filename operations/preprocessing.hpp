@@ -10,15 +10,7 @@
 #include "../gen-cpp/CalciteServer.h"
 #include "../gen-cpp/calciteserver_types.h"
 
-std::map<std::string, int> table_column_numbers(
-    {
-        {"lineorder", 17},
-        {"part", 9},
-        {"supplier", 7},
-        {"customer", 8},
-        {"ddate", 17}
-    }
-);
+#include "../kernels/types.hpp"
 
 
 struct ExecutionInfo

@@ -9,7 +9,7 @@
 
 #define DATA_DIR "/tmp/data/s20_columnar/"
 
-TableData<int> loadTable(std::string table_name, int col_number, const std::set<int> &columns, std::vector<void *> &resources, sycl::queue &queue)
+TableData<int> loadTable(std::string table_name, int col_number, const std::set<int> &columns, sycl::queue &queue)
 {
     TableData<int> res;
 
@@ -44,8 +44,8 @@ TableData<int> loadTable(std::string table_name, int col_number, const std::set<
         colData.close();
 
         res.columns[i].content = sycl::malloc_device<int>(num_entries, queue);
-        auto e1 = queue.copy(content, res.columns[i].content, num_entries);
-        resources.push_back(content);
+        queue.copy(content, res.columns[i].content, num_entries).wait();
+        sycl::free(content, queue);
 
         res.col_len = num_entries;
         res.columns[i].has_ownership = true;
@@ -55,8 +55,8 @@ TableData<int> loadTable(std::string table_name, int col_number, const std::set<
         int *max_val = sycl::malloc_shared<int>(1, queue);
         content = res.columns[i].content;
 
-        auto e2 = queue.copy(content, min_val, 1, e1);
-        auto e3 = queue.copy(content, max_val, 1, e1);
+        auto e2 = queue.copy(content, min_val, 1);
+        auto e3 = queue.copy(content, max_val, 1);
 
         queue.submit(
             [&](sycl::handler &cgh)
@@ -77,12 +77,12 @@ TableData<int> loadTable(std::string table_name, int col_number, const std::set<
                     }
                 );
             }
-        );
+        ).wait();
 
         res.columns[i].min_value = *min_val;
         res.columns[i].max_value = *max_val;
-        resources.push_back(min_val);
-        resources.push_back(max_val);
+        sycl::free(min_val, queue);
+        sycl::free(max_val, queue);
 
         i++;
     }
@@ -93,6 +93,56 @@ TableData<int> loadTable(std::string table_name, int col_number, const std::set<
         << res.columns_size << " in memory)" << std::endl;
 
     res.flags = sycl::malloc_device<bool>(res.col_len, queue);
-    queue.fill(res.flags, true, res.col_len);
+    queue.fill(res.flags, true, res.col_len).wait();
+    return res;
+}
+
+std::map<std::string, TableData<int>> preload_all_tables(sycl::queue &queue)
+{
+    std::map<std::string, TableData<int>> tables;
+
+    for (const auto &table_entry : table_column_indices)
+    {
+        const std::string &table_name = table_entry.first;
+        const std::set<int> &columns = table_entry.second;
+
+        tables[table_name] = loadTable(table_name, table_column_numbers[table_name], columns, queue);
+    }
+
+    return tables;
+}
+
+TableData<int> copy_table(const TableData<int> &table_data, const std::set<int> &columns, sycl::queue &queue)
+{
+    TableData<int> res;
+
+    res.col_number = table_data.col_number;
+    res.columns_size = columns.size();
+    res.table_name = table_data.table_name;
+    res.ht = nullptr;
+    res.col_len = table_data.col_len;
+
+    res.columns = sycl::malloc_shared<ColumnData<int>>(res.columns_size, queue);
+
+    int i = 0;
+    for (auto &col_idx : columns)
+    {
+        res.column_indices[col_idx] = i; // map the column index to the actual position
+        int orig_col_idx = table_data.column_indices.at(col_idx);
+
+        int *content = sycl::malloc_device<int>(table_data.col_len, queue);
+        queue.copy(table_data.columns[orig_col_idx].content, content, table_data.col_len);
+        res.columns[i].content = content;
+        res.columns[i].has_ownership = true;
+        res.columns[i].is_aggregate_result = false;
+
+        res.columns[i].min_value = table_data.columns[orig_col_idx].min_value;
+        res.columns[i].max_value = table_data.columns[orig_col_idx].max_value;
+
+        i++;
+    }
+
+    res.flags = sycl::malloc_device<bool>(res.col_len, queue);
+    queue.copy(table_data.flags, res.flags, res.col_len);
     return res;
 }

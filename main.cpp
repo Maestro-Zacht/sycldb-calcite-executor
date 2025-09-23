@@ -24,8 +24,6 @@ using namespace apache::thrift;
 using namespace apache::thrift::protocol;
 using namespace apache::thrift::transport;
 
-#define MAX_NTABLES 5
-
 #define PERFORMANCE_MEASUREMENT_ACTIVE 1
 #define PERFORMANCE_REPETITIONS 3
 
@@ -72,9 +70,9 @@ void save_result(const TableData<int> &table_data, const std::string &data_path)
     outfile.close();
 }
 
-std::chrono::duration<double, std::milli> execute_result(const PlanResult &result, const std::string &data_path, std::ostream &perf_out = std::cout)
+std::chrono::duration<double, std::milli> execute_result(const PlanResult &result, const std::string &data_path, const std::map<std::string, TableData<int>> &all_tables, sycl::queue &queue, std::ostream &perf_out = std::cout)
 {
-    sycl::queue queue{ sycl::gpu_selector_v, sycl::ext::codeplay::experimental::property::queue::enable_fusion {} };
+
     #if not PERFORMANCE_MEASUREMENT_ACTIVE
     std::cout << "Running on: " << queue.get_device().get_info<sycl::info::device::name>() << std::endl;
     #else
@@ -107,8 +105,8 @@ std::chrono::duration<double, std::milli> execute_result(const PlanResult &resul
         }
 
         const std::set<int> &column_idxs = exec_info.loaded_columns[rel.tables[1]];
-        tables[current_table] = loadTable(rel.tables[1], table_column_numbers[rel.tables[1]], column_idxs, resources, queue);
-        tables[current_table].table_name = rel.tables[1];
+        tables[current_table] = copy_table(all_tables.at(rel.tables[1]), column_idxs, queue);
+
         if (exec_info.group_by_columns.find(rel.tables[1]) != exec_info.group_by_columns.end())
             tables[current_table].group_by_column = exec_info.group_by_columns[rel.tables[1]];
         output_table[rel.id] = current_table;
@@ -407,6 +405,7 @@ int main(int argc, char **argv)
     std::shared_ptr<TProtocol> protocol(new TBinaryProtocol(transport));
     CalciteServerClient client(protocol);
     std::string sql;
+    sycl::queue queue{ sycl::gpu_selector_v, sycl::ext::codeplay::experimental::property::queue::enable_fusion {} };
 
     if (argc == 2)
     {
@@ -437,6 +436,8 @@ int main(int argc, char **argv)
         transport->open();
         std::cout << "Transport opened successfully." << std::endl;
 
+        auto all_tables = preload_all_tables(queue);
+
         #if PERFORMANCE_MEASUREMENT_ACTIVE
         std::string sql_filename = argv[1];
         std::string query_name = sql_filename.substr(sql_filename.find_last_of("/") + 1, 3);
@@ -453,7 +454,7 @@ int main(int argc, char **argv)
 
             auto start = std::chrono::high_resolution_clock::now();
             client.parse(result, sql);
-            auto exec_time = execute_result(result, argv[1], perf_file);
+            auto exec_time = execute_result(result, argv[1], all_tables, queue, perf_file);
             auto end = std::chrono::high_resolution_clock::now();
             std::chrono::duration<double, std::milli> total_time = end - start;
 
@@ -468,7 +469,7 @@ int main(int argc, char **argv)
 
         // std::cout << "Result: " << result << std::endl;
 
-        execute_result(result, argv[1]);
+        execute_result(result, argv[1], all_tables, queue);
         #endif
 
         // client.shutdown();
