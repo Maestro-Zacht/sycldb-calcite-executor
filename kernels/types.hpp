@@ -21,6 +21,7 @@ struct TableData
     int col_number;      // total number of columns in the table
     bool *flags;         // selection flags
     int group_by_column; // column number used for grouping, -1 if not used
+    void *ht;               // hash table for joins
     std::string table_name;
     std::map<int, int> column_indices; // Maps column numbers from calcite to its index in the columns array
 };

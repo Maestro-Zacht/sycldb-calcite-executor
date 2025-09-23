@@ -82,22 +82,39 @@ sycl::event filter_join(
     T probe_col[],
     bool probe_col_flags[],
     int probe_col_len,
+    bool *build_ht,
     std::vector<void *> &resources,
     sycl::queue &queue,
     const std::vector<sycl::event> &dependencies)
 {
     std::vector<sycl::event> events(dependencies);
     int ht_len = build_max_value - build_min_value + 1;
-    bool *ht = sycl::malloc_device<bool>(ht_len, queue);
-    auto e1 = queue.fill(ht, false, ht_len);
-    events.push_back(e1);
+    bool *ht;
 
-    auto e2 = build_keys_ht(build_col, build_flags, build_col_len, ht, ht_len, build_min_value, queue, events);
+    if (build_ht != nullptr)
+    {
+        ht = build_ht;
+    }
+    else
+    {
+        ht = sycl::malloc_device<bool>(ht_len, queue);
+        auto e1 = queue.fill(ht, false, ht_len);
+        events.push_back(e1);
+
+        auto e2 = build_keys_ht(build_col, build_flags, build_col_len, ht, ht_len, build_min_value, queue, events);
+        events = { e2 };
+
+        #if PRINT_JOIN_DEBUG_INFO
+        std::cout << "JOIN ht built in FILTER JOIN op" << std::endl;
+        #endif
+    }
+
+
 
     auto e3 = queue.submit(
         [&](sycl::handler &cgh)
         {
-            cgh.depends_on(e2);
+            cgh.depends_on(events);
             cgh.parallel_for(
                 probe_col_len,
                 [=](sycl::id<1> idx)
@@ -114,7 +131,8 @@ sycl::event filter_join(
         }
     );
 
-    resources.push_back(ht);
+    if (build_ht == nullptr)
+        resources.push_back(ht);
 
     return e3;
 }
@@ -133,32 +151,48 @@ sycl::event full_join(
         probe_column = probe_table.column_indices.at(probe_col_index),
         group_by_column = build_table.column_indices.at(build_table.group_by_column),
         ht_len = build_table.columns[build_column].max_value - build_table.columns[build_column].min_value + 1,
-        *ht = sycl::malloc_device<int>(ht_len * 2, queue);
+        *ht;
 
     #if PRINT_JOIN_DEBUG_INFO
     auto start = std::chrono::high_resolution_clock::now();
-    #endif
-
-    auto e1 = queue.fill(ht, 0, ht_len * 2);
-    events.push_back(e1);
-
-    #if PRINT_JOIN_DEBUG_INFO
     auto end = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double, std::milli> diff1 = end - start;
-
-    start = std::chrono::high_resolution_clock::now();
     #endif
 
-    auto e2 = build_key_vals_ht(
-        build_table.columns[build_column].content,
-        build_table.columns[group_by_column].content,
-        build_table.flags, build_table.col_len, ht, ht_len,
-        build_table.columns[build_column].min_value, queue, events);
+    if (build_table.ht != nullptr)
+    {
+        ht = (int *)build_table.ht;
+    }
+    else
+    {
+        ht = sycl::malloc_device<int>(ht_len * 2, queue);
 
-    #if PRINT_JOIN_DEBUG_INFO
-    end = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double, std::milli> diff2 = end - start;
-    #endif
+        auto e1 = queue.fill(ht, 0, ht_len * 2);
+        events.push_back(e1);
+
+        #if PRINT_JOIN_DEBUG_INFO
+        auto end = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double, std::milli> diff1 = end - start;
+
+        start = std::chrono::high_resolution_clock::now();
+        #endif
+
+        auto e2 = build_key_vals_ht(
+            build_table.columns[build_column].content,
+            build_table.columns[group_by_column].content,
+            build_table.flags, build_table.col_len, ht, ht_len,
+            build_table.columns[build_column].min_value, queue, events);
+
+        #if PRINT_JOIN_DEBUG_INFO
+        end = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double, std::milli> diff2 = end - start;
+
+        std::cout << "JOIN ht built in FULL JOIN op\n"
+            << "diff1 (" << ht_len << "): " << diff1.count() << " ms\n"
+            << "diff2: " << diff2.count() << " ms\n";
+        #endif
+
+        events = { e2 };
+    }
 
     bool *probe_flags = probe_table.flags;
     int *probe_content = probe_table.columns[probe_column].content,
@@ -172,7 +206,7 @@ sycl::event full_join(
     auto e3 = queue.submit(
         [&](sycl::handler &cgh)
         {
-            cgh.depends_on(e2);
+            cgh.depends_on(events);
             cgh.parallel_for(
                 sycl::range<1>{(unsigned long)probe_table.col_len},
                 [=](sycl::id<1> idx)
@@ -209,15 +243,14 @@ sycl::event full_join(
     probe_table.columns[probe_column].min_value = build_table.columns[group_by_column].min_value;
     probe_table.columns[probe_column].max_value = build_table.columns[group_by_column].max_value;
 
-    resources.push_back(ht);
+    if (build_table.ht == nullptr)
+        resources.push_back(ht);
 
     #if PRINT_JOIN_DEBUG_INFO
     end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double, std::milli> diff4 = end - start;
 
-    std::cout << "diff1 (" << ht_len << "): " << diff1.count() << " ms\n"
-        << "diff2: " << diff2.count() << " ms\n"
-        << "diff3: " << diff3.count() << " ms\n"
+    std::cout << "diff3: " << diff3.count() << " ms\n"
         << "diff4: " << diff4.count() << " ms"
         << std::endl;
     #endif

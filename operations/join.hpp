@@ -42,7 +42,7 @@ std::vector<sycl::event> parse_join(
             right_table.columns[right_table.column_indices.at(right_column)].max_value,
             right_table.columns[right_table.column_indices.at(right_column)].min_value,
             left_table.columns[left_table.column_indices.at(left_column)].content,
-            left_table.flags, left_table.col_len,
+            left_table.flags, left_table.col_len, (bool *)right_table.ht,
             resources, queue, dependencies);
     }
     else if (left_table.table_name == "lineorder")

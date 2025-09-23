@@ -218,13 +218,13 @@ std::tuple<
     #endif
 
     int *results = sycl::malloc_device<int>(col_num * prod_ranges, queue);
-    auto e1 = queue.fill(results, 0, col_num * prod_ranges);
+    auto e1 = queue.memset(results, 0, sizeof(int) * col_num * prod_ranges);
 
     uint64_t *agg_result = sycl::malloc_device<uint64_t>(prod_ranges, queue);
-    auto e2 = queue.fill(agg_result, (uint64_t)0, prod_ranges);
+    auto e2 = queue.memset(agg_result, 0, sizeof(uint64_t) * prod_ranges);
 
     unsigned *res_flags = sycl::malloc_device<unsigned>(prod_ranges, queue);
-    auto e3 = queue.fill(res_flags, (unsigned)0, prod_ranges);
+    auto e3 = queue.memset(res_flags, 0, sizeof(unsigned) * prod_ranges);
 
     #if PRINT_AGGREGATE_DEBUG_INFO
     end = std::chrono::high_resolution_clock::now();

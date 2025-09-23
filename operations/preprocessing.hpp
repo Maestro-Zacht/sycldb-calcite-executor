@@ -10,16 +10,22 @@
 #include "../gen-cpp/CalciteServer.h"
 #include "../gen-cpp/calciteserver_types.h"
 
-std::map<std::string, int> table_column_numbers({ {"lineorder", 17},
-                                                 {"part", 9},
-                                                 {"supplier", 7},
-                                                 {"customer", 8},
-                                                 {"ddate", 17} });
+std::map<std::string, int> table_column_numbers(
+    {
+        {"lineorder", 17},
+        {"part", 9},
+        {"supplier", 7},
+        {"customer", 8},
+        {"ddate", 17}
+    }
+);
+
 
 struct ExecutionInfo
 {
     std::map<std::string, std::set<int>> loaded_columns;
     std::map<std::string, int> table_last_used, group_by_columns;
+    std::map<int, std::tuple<int, int>> prepare_join;
     std::vector<int> dag_order;
 };
 
@@ -265,6 +271,16 @@ ExecutionInfo parse_execution_info(const PlanResult &result)
                     ? left_info[col]
                     : right_info[col - left_info.size()]
                 );
+
+                if (table_name != "lineorder")
+                {
+                    int previous_op_id = info.table_last_used[table_name];
+                    if (previous_op_id != rel.id)
+                    {
+                        int right_column = rel.condition.operands[1].input - left_info.size();
+                        info.prepare_join[previous_op_id] = std::make_tuple(rel.id, right_column);
+                    }
+                }
 
                 info.loaded_columns[table_name].insert(col_index);
                 info.table_last_used[table_name] = rel.id;

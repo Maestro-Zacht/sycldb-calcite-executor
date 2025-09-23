@@ -16,6 +16,7 @@ TableData<int> loadTable(std::string table_name, int col_number, const std::set<
     res.col_number = col_number;
     res.columns_size = columns.size();
     res.table_name = table_name;
+    res.ht = nullptr;
 
     res.columns = sycl::malloc_shared<ColumnData<int>>(res.columns_size, queue);
 

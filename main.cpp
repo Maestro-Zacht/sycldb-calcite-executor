@@ -27,7 +27,7 @@ using namespace apache::thrift::transport;
 #define MAX_NTABLES 5
 
 #define PERFORMANCE_MEASUREMENT_ACTIVE 1
-#define PERFORMANCE_REPETITIONS 100
+#define PERFORMANCE_REPETITIONS 3
 
 void print_result(const TableData<int> &table_data)
 {
@@ -275,6 +275,45 @@ std::chrono::duration<double, std::milli> execute_result(const PlanResult &resul
             std::cout << "Unsupported RelNodeType: " << rel.relOp << std::endl;
             break;
         }
+
+        if (exec_info.prepare_join.find(rel.id) != exec_info.prepare_join.end())
+        {
+            auto [join_id, right_column_idx] = exec_info.prepare_join[rel.id];
+
+            TableData<int> &table_info = tables[output_table[rel.id]];
+            ColumnData<int> &column_info = table_info.columns[table_info.column_indices.at(right_column_idx)];
+
+            std::vector<sycl::event> &ht_dependencies = dependencies[rel.id];
+
+            if (join_id == exec_info.table_last_used[table_info.table_name])
+            {
+                // filter join ht
+                int ht_len = column_info.max_value - column_info.min_value + 1;
+                bool *ht = sycl::malloc_device<bool>(ht_len, queue);
+                auto e1 = queue.memset(ht, 0, sizeof(bool) * ht_len);
+                ht_dependencies.push_back(e1);
+
+                auto e2 = build_keys_ht(column_info.content, table_info.flags, table_info.col_len, ht, ht_len, column_info.min_value, queue, ht_dependencies);
+                ht_dependencies = { e2 };
+
+                table_info.ht = ht;
+            }
+            else
+            {
+                // full join ht
+                ColumnData<int> &group_by_column_info = table_info.columns[table_info.column_indices.at(table_info.group_by_column)];
+                int ht_len = column_info.max_value - column_info.min_value + 1,
+                    *ht = sycl::malloc_device<int>(ht_len * 2, queue);
+
+                auto e1 = queue.memset(ht, 0, sizeof(int) * ht_len * 2);
+                ht_dependencies.push_back(e1);
+
+                auto e2 = build_key_vals_ht(column_info.content, group_by_column_info.content, table_info.flags, table_info.col_len, ht, ht_len, column_info.min_value, queue, ht_dependencies);
+                ht_dependencies = { e2 };
+
+                table_info.ht = ht;
+            }
+        }
     }
 
     if (fusion_active)
@@ -339,6 +378,8 @@ std::chrono::duration<double, std::milli> execute_result(const PlanResult &resul
             if (tables[i].columns[j].has_ownership)
                 sycl::free(tables[i].columns[j].content, queue);
         sycl::free(tables[i].columns, queue);
+        if (tables[i].ht != nullptr)
+            sycl::free(tables[i].ht, queue);
     }
     sycl::free(output_table, queue);
 
