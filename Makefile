@@ -1,4 +1,4 @@
-CXX := clang++ -fsycl -Wall -fsycl-targets=nvptx64-nvidia-cuda
+CXX := clang++ -fsycl -fsycl-embed-ir -Wall -fsycl-targets=nvptx64-nvidia-cuda
 CXXFLAGS := -std=c++20 -O3 -Ikernels -Igen-cpp -Ioperations -I/usr/local/include
 LDFLAGS := -L/usr/local/lib -lthrift -Wl,-rpath=/usr/local/lib
 
