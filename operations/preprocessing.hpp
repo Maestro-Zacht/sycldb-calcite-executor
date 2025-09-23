@@ -73,19 +73,17 @@ std::vector<int> dag_topological_sort(const PlanResult &result)
     // Topological sort of the DAG
     std::vector<int> sorted;
     sorted.reserve(result.rels.size());
-    int delayed = 0;
 
     while (!S.empty())
     {
         int node = S.back();
         S.pop_back();
 
-        if (delayed < 2 &&
+        if (S.size() != 0 &&
             result.rels[node].relOp == RelNodeType::TABLE_SCAN &&
             result.rels[node].tables[1] == "lineorder")
         {
             S.push_front(node);
-            delayed++;
             continue;
         }
         sorted.push_back(node);
