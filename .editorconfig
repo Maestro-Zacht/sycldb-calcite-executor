@@ -1,0 +1,12 @@
+root = true
+
+[*.{c++,cc,cpp,cxx,h,h++,hh,hpp,hxx,inl,ipp,tlh,tli}]
+cpp_new_line_before_open_brace_namespace = new_line
+cpp_new_line_before_open_brace_type = new_line
+cpp_new_line_before_open_brace_function = new_line
+cpp_new_line_before_open_brace_block = new_line
+cpp_new_line_before_open_brace_lambda = new_line
+cpp_new_line_close_brace_same_line_empty_function = true
+cpp_space_pointer_reference_alignment = right
+cpp_indent_preprocessor = none
+cpp_indent_within_parentheses = true
