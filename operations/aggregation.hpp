@@ -26,7 +26,13 @@ std::vector<sycl::event> parse_aggregate(
 
     if (group.size() == 0)
     {
-        uint64_t *result = sycl::malloc_device<uint64_t>(1, queue);
+        uint64_t *result =
+            #if ALLOC_ON_HOST
+            sycl::malloc_host<uint64_t>
+            #else
+            sycl::malloc_device<uint64_t>
+            #endif
+            (1, queue);
         events.push_back(aggregate_operation(result,
             table_data.columns[table_data.column_indices.at(agg.operands[0])].content,
             table_data.flags, table_data.col_len, agg.agg, queue, dependencies));
@@ -71,7 +77,13 @@ std::vector<sycl::event> parse_aggregate(
         start = std::chrono::high_resolution_clock::now();
         #endif
 
-        table_data.flags = sycl::malloc_device<bool>(1, queue);
+        table_data.flags =
+            #if ALLOC_ON_HOST
+            sycl::malloc_host<bool>
+            #else
+            sycl::malloc_device<bool>
+            #endif
+            (1, queue);
         events.push_back(queue.fill(table_data.flags, true, 1));
 
         #if PRINT_AGGREGATE_DEBUG_INFO
@@ -128,7 +140,13 @@ std::vector<sycl::event> parse_aggregate(
         table_data.columns = sycl::malloc_shared<ColumnData<int>>(group.size() + 1, queue);
         for (int i = 0; i < group.size(); i++)
         {
-            table_data.columns[i].content = sycl::malloc_device<int>(std::get<1>(agg_res), queue);
+            table_data.columns[i].content =
+                #if ALLOC_ON_HOST
+                sycl::malloc_host<int>
+                #else
+                sycl::malloc_device<int>
+                #endif
+                (std::get<1>(agg_res), queue);
             events.push_back(queue.memcpy(table_data.columns[i].content,
                 std::get<0>(agg_res) + i * std::get<1>(agg_res),
                 std::get<1>(agg_res) * sizeof(int), agg_event));

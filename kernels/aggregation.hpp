@@ -217,13 +217,31 @@ std::tuple<
     start = std::chrono::high_resolution_clock::now();
     #endif
 
-    int *results = sycl::malloc_device<int>(col_num * prod_ranges, queue);
+    int *results =
+        #if ALLOC_ON_HOST
+        sycl::malloc_host<int>
+        #else
+        sycl::malloc_device<int>
+        #endif
+        (col_num * prod_ranges, queue);
     auto e1 = queue.memset(results, 0, sizeof(int) * col_num * prod_ranges);
 
-    uint64_t *agg_result = sycl::malloc_device<uint64_t>(prod_ranges, queue);
+    uint64_t *agg_result =
+        #if ALLOC_ON_HOST
+        sycl::malloc_host<uint64_t>
+        #else
+        sycl::malloc_device<uint64_t>
+        #endif
+        (prod_ranges, queue);
     auto e2 = queue.memset(agg_result, 0, sizeof(uint64_t) * prod_ranges);
 
-    unsigned *res_flags = sycl::malloc_device<unsigned>(prod_ranges, queue);
+    unsigned *res_flags =
+        #if ALLOC_ON_HOST
+        sycl::malloc_host<unsigned>
+        #else
+        sycl::malloc_device<unsigned>
+        #endif
+        (prod_ranges, queue);
     auto e3 = queue.memset(res_flags, 0, sizeof(unsigned) * prod_ranges);
 
     #if PRINT_AGGREGATE_DEBUG_INFO
@@ -332,7 +350,13 @@ std::tuple<
     //     }
     // }
 
-    bool *final_flags = sycl::malloc_device<bool>(prod_ranges, queue);
+    bool *final_flags =
+        #if ALLOC_ON_HOST
+        sycl::malloc_host<bool>
+        #else
+        sycl::malloc_device<bool>
+        #endif
+        (prod_ranges, queue);
     auto e5 = queue.submit(
         [&](sycl::handler &cgh)
         {

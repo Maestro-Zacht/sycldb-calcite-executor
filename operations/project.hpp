@@ -34,7 +34,13 @@ std::vector<sycl::event> parse_project(
             break;
         case ExprOption::LITERAL:
             // create a new column with the literal value
-            new_columns[i].content = sycl::malloc_device<int>(table_data.col_len, queue); // device
+            new_columns[i].content =
+                #if ALLOC_ON_HOST
+                sycl::malloc_host<int>
+                #else
+                sycl::malloc_device<int>
+                #endif
+                (table_data.col_len, queue); // device
             events = {
                 queue.fill(new_columns[i].content, (int)exprs[i].literal.value, table_data.col_len, std::move(events))
             };
@@ -50,7 +56,13 @@ std::vector<sycl::event> parse_project(
                 std::cerr << "Project operation: Unsupported number of operands for EXPR" << std::endl;
                 return {};
             }
-            new_columns[i].content = sycl::malloc_device<int>(table_data.col_len, queue); // device
+            new_columns[i].content =
+                #if ALLOC_ON_HOST
+                sycl::malloc_host<int>
+                #else
+                sycl::malloc_device<int>
+                #endif
+                (table_data.col_len, queue); // device
             new_columns[i].has_ownership = true;
             new_columns[i].is_aggregate_result = false;
 

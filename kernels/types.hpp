@@ -4,6 +4,8 @@
 
 #define MAX_NTABLES 5
 
+#define ALLOC_ON_HOST 0
+
 std::map<std::string, std::set<int>> table_column_indices(
     {
         {"lineorder", {2, 3, 4, 5, 8, 9, 11, 12, 13}},

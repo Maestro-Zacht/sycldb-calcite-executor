@@ -43,7 +43,13 @@ TableData<int> loadTable(std::string table_name, int col_number, const std::set<
         colData.read((char *)content, num_entries * sizeof(int));
         colData.close();
 
-        res.columns[i].content = sycl::malloc_device<int>(num_entries, queue);
+        res.columns[i].content =
+            #if ALLOC_ON_HOST
+            sycl::malloc_host<int>
+            #else
+            sycl::malloc_device<int>
+            #endif
+            (num_entries, queue);
         queue.copy(content, res.columns[i].content, num_entries).wait();
         sycl::free(content, queue);
 
@@ -92,7 +98,13 @@ TableData<int> loadTable(std::string table_name, int col_number, const std::set<
         << res.col_number << " columns ("
         << res.columns_size << " in memory)" << std::endl;
 
-    res.flags = sycl::malloc_device<bool>(res.col_len, queue);
+    res.flags =
+        #if ALLOC_ON_HOST
+        sycl::malloc_host<bool>
+        #else
+        sycl::malloc_device<bool>
+        #endif
+        (res.col_len, queue);
     queue.fill(res.flags, true, res.col_len).wait();
     return res;
 }
@@ -130,7 +142,13 @@ TableData<int> copy_table(const TableData<int> &table_data, const std::set<int> 
         res.column_indices[col_idx] = i; // map the column index to the actual position
         int orig_col_idx = table_data.column_indices.at(col_idx);
 
-        int *content = sycl::malloc_device<int>(table_data.col_len, queue);
+        int *content =
+            #if ALLOC_ON_HOST
+            sycl::malloc_host<int>
+            #else
+            sycl::malloc_device<int>
+            #endif
+            (table_data.col_len, queue);
         queue.copy(table_data.columns[orig_col_idx].content, content, table_data.col_len);
         res.columns[i].content = content;
         res.columns[i].has_ownership = true;
@@ -142,7 +160,13 @@ TableData<int> copy_table(const TableData<int> &table_data, const std::set<int> 
         i++;
     }
 
-    res.flags = sycl::malloc_device<bool>(res.col_len, queue);
+    res.flags =
+        #if ALLOC_ON_HOST
+        sycl::malloc_host<bool>
+        #else
+        sycl::malloc_device<bool>
+        #endif
+        (res.col_len, queue);
     queue.copy(table_data.flags, res.flags, res.col_len);
     return res;
 }
