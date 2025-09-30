@@ -73,9 +73,7 @@ void save_result(const TableData<int> &table_data, const std::string &data_path)
 std::chrono::duration<double, std::milli> execute_result(const PlanResult &result, const std::string &data_path, const std::map<std::string, TableData<int>> &all_tables, sycl::queue &queue, std::ostream &perf_out = std::cout)
 {
 
-    #if not PERFORMANCE_MEASUREMENT_ACTIVE
-    std::cout << "Running on: " << queue.get_device().get_info<sycl::info::device::name>() << std::endl;
-    #else
+    #if PERFORMANCE_MEASUREMENT_ACTIVE
     bool output_done = false;
     #endif
     sycl::ext::codeplay::experimental::fusion_wrapper fw{ queue };
@@ -407,6 +405,10 @@ int main(int argc, char **argv)
     std::string sql;
     sycl::queue queue{ sycl::gpu_selector_v, sycl::ext::codeplay::experimental::property::queue::enable_fusion {} };
 
+    #if not PERFORMANCE_MEASUREMENT_ACTIVE
+    std::cout << "Running on: " << queue.get_device().get_info<sycl::info::device::name>() << std::endl;
+    #endif
+
     if (argc == 2)
     {
         std::ifstream file(argv[1]);
@@ -441,7 +443,7 @@ int main(int argc, char **argv)
         #if PERFORMANCE_MEASUREMENT_ACTIVE
         std::string sql_filename = argv[1];
         std::string query_name = sql_filename.substr(sql_filename.find_last_of("/") + 1, 3);
-        std::ofstream perf_file(query_name + "-performance-fusion.log", std::ios::out | std::ios::trunc);
+        std::ofstream perf_file(query_name + "-performance-cxl.log", std::ios::out | std::ios::trunc);
         if (!perf_file.is_open())
         {
             std::cerr << "Could not open performance log file: " << query_name << "-performance.log" << std::endl;
