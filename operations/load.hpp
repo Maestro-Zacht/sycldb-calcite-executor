@@ -7,7 +7,7 @@
 
 #include "../kernels/types.hpp"
 
-#define DATA_DIR "/tmp/data/s20_columnar/"
+#define DATA_DIR "/home/dust/ssb/s20_columnar/"
 
 TableData<int> loadTable(std::string table_name, int col_number, const std::set<int> &columns, sycl::queue &queue)
 {
