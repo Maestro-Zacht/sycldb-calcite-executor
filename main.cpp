@@ -27,6 +27,9 @@ using namespace apache::thrift::transport;
 #define PERFORMANCE_MEASUREMENT_ACTIVE 1
 #define PERFORMANCE_REPETITIONS 100
 
+class InitTimer;
+class EndTimer;
+
 void print_result(const TableData<int> &table_data)
 {
     int res_count = 0;
@@ -119,6 +122,8 @@ std::chrono::duration<double, std::milli> execute_result(const PlanResult &resul
     #endif
 
     queue.wait();
+
+    queue.single_task<InitTimer>([=]() {}).wait();
 
     auto start = std::chrono::high_resolution_clock::now();
 
@@ -251,6 +256,8 @@ std::chrono::duration<double, std::milli> execute_result(const PlanResult &resul
                 fusion_active = false;
             }
             queue.wait();
+            queue.single_task<EndTimer>([=]() {}).wait();
+
             auto start_sort = std::chrono::high_resolution_clock::now();
             #if not PERFORMANCE_MEASUREMENT_ACTIVE
             parse_sort(rel, tables[output_table[rel.id - 1]], queue);
