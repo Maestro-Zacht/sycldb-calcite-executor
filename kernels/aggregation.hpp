@@ -183,7 +183,7 @@ sycl::event aggregate_operation(
 }
 
 std::tuple<
-    int *,
+    int **,
     unsigned long long,
     bool *,
     uint64_t *,
@@ -200,6 +200,8 @@ std::tuple<
     const std::vector<sycl::event> &dependencies)
 {
     unsigned long long prod_ranges = 1;
+    std::vector<sycl::event> events(dependencies);
+    events.reserve(dependencies.size() + col_num + 2);
 
     #if PRINT_AGGREGATE_DEBUG_INFO
     auto start = std::chrono::high_resolution_clock::now();
@@ -217,14 +219,19 @@ std::tuple<
     start = std::chrono::high_resolution_clock::now();
     #endif
 
-    int *results =
-        #if ALLOC_ON_HOST
-        sycl::malloc_host<int>
-        #else
-        sycl::malloc_device<int>
-        #endif
-        (col_num * prod_ranges, queue);
-    auto e1 = queue.memset(results, 0, sizeof(int) * col_num * prod_ranges);
+    int **results = sycl::malloc_shared<int *>(col_num, queue);
+    for (int i = 0; i < col_num; i++)
+    {
+        results[i] =
+            #if ALLOC_ON_HOST
+            sycl::malloc_host<int>
+            #else
+            sycl::malloc_device<int>
+            #endif
+            (prod_ranges, queue);
+
+        events.push_back(queue.memset(results[i], 0, sizeof(int) * prod_ranges));
+    }
 
     uint64_t *agg_result =
         #if ALLOC_ON_HOST
@@ -233,7 +240,7 @@ std::tuple<
         sycl::malloc_device<uint64_t>
         #endif
         (prod_ranges, queue);
-    auto e2 = queue.memset(agg_result, 0, sizeof(uint64_t) * prod_ranges);
+    events.push_back(queue.memset(agg_result, 0, sizeof(uint64_t) * prod_ranges));
 
     unsigned *res_flags =
         #if ALLOC_ON_HOST
@@ -242,7 +249,7 @@ std::tuple<
         sycl::malloc_device<unsigned>
         #endif
         (prod_ranges, queue);
-    auto e3 = queue.memset(res_flags, 0, sizeof(unsigned) * prod_ranges);
+    events.push_back(queue.memset(res_flags, 0, sizeof(unsigned) * prod_ranges));
 
     #if PRINT_AGGREGATE_DEBUG_INFO
     end = std::chrono::high_resolution_clock::now();
@@ -254,10 +261,7 @@ std::tuple<
     auto e4 = queue.submit(
         [&](sycl::handler &cgh)
         {
-            cgh.depends_on(dependencies);
-            cgh.depends_on(e1);
-            cgh.depends_on(e2);
-            cgh.depends_on(e3);
+            cgh.depends_on(events);
             cgh.parallel_for(
                 col_len,
                 [=](sycl::id<1> idx)
@@ -282,15 +286,17 @@ std::tuple<
                         if (flag_obj.fetch_add(1) == 0)
                         {
                             for (int j = 0; j < col_num; j++)
-                                results[j * prod_ranges + hash] = group_columns[j].content[i];
+                                results[j][hash] = group_columns[j].content[i];
                         }
 
                         // if (agg_op == "SUM")
-                        auto sum_obj =
-                            sycl::atomic_ref<uint64_t,
+
+                        sycl::atomic_ref<
+                            uint64_t,
                             sycl::memory_order::relaxed,
                             sycl::memory_scope::device,
-                            sycl::access::address_space::global_space>(agg_result[hash]);
+                            sycl::access::address_space::global_space
+                        > sum_obj(agg_result[hash]);
                         sum_obj.fetch_add(agg_column[i]);
                     }
                 }

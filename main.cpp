@@ -252,8 +252,9 @@ std::chrono::duration<double, std::milli> execute_result(const PlanResult &resul
             }
             queue.wait();
             auto start_sort = std::chrono::high_resolution_clock::now();
-
+            #if not PERFORMANCE_MEASUREMENT_ACTIVE
             parse_sort(rel, tables[output_table[rel.id - 1]], queue);
+            #endif
             output_table[rel.id] = output_table[rel.id - 1];
 
             dependencies[rel.id] = {};

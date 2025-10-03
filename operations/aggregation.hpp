@@ -137,19 +137,12 @@ std::vector<sycl::event> parse_aggregate(
 
         sycl::event agg_event = std::get<4>(agg_res);
 
+        int **results = std::get<0>(agg_res);
+
         table_data.columns = sycl::malloc_shared<ColumnData<int>>(group.size() + 1, queue);
         for (int i = 0; i < group.size(); i++)
         {
-            table_data.columns[i].content =
-                #if ALLOC_ON_HOST
-                sycl::malloc_host<int>
-                #else
-                sycl::malloc_device<int>
-                #endif
-                (std::get<1>(agg_res), queue);
-            events.push_back(queue.memcpy(table_data.columns[i].content,
-                std::get<0>(agg_res) + i * std::get<1>(agg_res),
-                std::get<1>(agg_res) * sizeof(int), agg_event));
+            table_data.columns[i].content = results[i];
             table_data.columns[i].has_ownership = true;
             table_data.columns[i].is_aggregate_result = false;
             table_data.columns[i].min_value = 0; // TODO: set real min value
