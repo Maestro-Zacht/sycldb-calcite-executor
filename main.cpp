@@ -433,13 +433,13 @@ int main(int argc, char **argv)
         and lo_suppkey = s_suppkey;";
     }
 
+    auto all_tables = preload_all_tables(queue);
+
     try
     {
         // std::cout << "SQL Query: " << sql << std::endl;
         transport->open();
         std::cout << "Transport opened successfully." << std::endl;
-
-        auto all_tables = preload_all_tables(queue);
 
         #if PERFORMANCE_MEASUREMENT_ACTIVE
         std::string sql_filename = argv[1];
@@ -447,7 +447,7 @@ int main(int argc, char **argv)
         std::ofstream perf_file(query_name + "-performance-cxl.log", std::ios::out | std::ios::trunc);
         if (!perf_file.is_open())
         {
-            std::cerr << "Could not open performance log file: " << query_name << "-performance.log" << std::endl;
+            std::cerr << "Could not open performance log file: " << query_name << "-performance-cxl.log" << std::endl;
             return 1;
         }
 
