@@ -26,6 +26,7 @@ using namespace apache::thrift::transport;
 
 #define PERFORMANCE_MEASUREMENT_ACTIVE 1
 #define PERFORMANCE_REPETITIONS 100
+#define USE_FUSION 0
 
 class InitTimer;
 class EndTimer;
@@ -79,8 +80,11 @@ std::chrono::duration<double, std::milli> execute_result(const PlanResult &resul
     #if PERFORMANCE_MEASUREMENT_ACTIVE
     bool output_done = false;
     #endif
+
+    #if USE_FUSION
     sycl::ext::codeplay::experimental::fusion_wrapper fw{ queue };
     bool fusion_active = false;
+    #endif
 
     TableData<int> tables[MAX_NTABLES];
     int current_table = 0,
@@ -134,11 +138,15 @@ std::chrono::duration<double, std::milli> execute_result(const PlanResult &resul
         {
         case RelNodeType::TABLE_SCAN:
             dependencies[rel.id] = {};
+
+            #if USE_FUSION
             if (rel.tables[1] == "lineorder")
             {
                 fw.start_fusion();
                 fusion_active = true;
             }
+            #endif
+
             break;
         case RelNodeType::FILTER:
         {
@@ -190,11 +198,14 @@ std::chrono::duration<double, std::milli> execute_result(const PlanResult &resul
         }
         case RelNodeType::AGGREGATE:
         {
+            #if USE_FUSION
             if (fusion_active)
             {
                 fw.complete_fusion(sycl::ext::codeplay::experimental::property::no_barriers {});
                 fusion_active = false;
             }
+            #endif
+
             #if not PERFORMANCE_MEASUREMENT_ACTIVE
             auto start_aggregate = std::chrono::high_resolution_clock::now();
             #endif
@@ -250,11 +261,14 @@ std::chrono::duration<double, std::milli> execute_result(const PlanResult &resul
         }
         case RelNodeType::SORT:
         {
+            #if USE_FUSION
             if (fusion_active)
             {
                 fw.complete_fusion(sycl::ext::codeplay::experimental::property::no_barriers {});
                 fusion_active = false;
             }
+            #endif
+
             queue.wait();
             queue.single_task<EndTimer>([=]() {}).wait();
 
@@ -325,8 +339,10 @@ std::chrono::duration<double, std::milli> execute_result(const PlanResult &resul
         }
     }
 
+    #if USE_FUSION
     if (fusion_active)
         fw.complete_fusion(sycl::ext::codeplay::experimental::property::no_barriers {});
+    #endif
 
     auto end_before_wait = std::chrono::high_resolution_clock::now();
 
