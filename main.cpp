@@ -26,7 +26,7 @@ using namespace apache::thrift::transport;
 
 #define PERFORMANCE_MEASUREMENT_ACTIVE 1
 #define PERFORMANCE_REPETITIONS 100
-#define USE_FUSION 0
+#define USE_FUSION 1
 
 class InitTimer;
 class EndTimer;
