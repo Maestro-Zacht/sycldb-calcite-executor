@@ -9,7 +9,7 @@
 
 #define DATA_DIR "/home/dust/ssb/s20_columnar/"
 
-TableData<int> loadTable(std::string table_name, int col_number, const std::set<int> &columns, sycl::queue &queue)
+TableData<int> loadTable(std::string table_name, int col_number, const std::set<int> &columns, sycl::queue &queue, bool load_on_device = true)
 {
     TableData<int> res;
 
@@ -43,15 +43,24 @@ TableData<int> loadTable(std::string table_name, int col_number, const std::set<
         colData.read((char *)content, num_entries * sizeof(int));
         colData.close();
 
-        res.columns[i].content =
-            #if ALLOC_ON_HOST
-            sycl::malloc_host<int>
-            #else
-            sycl::malloc_device<int>
-            #endif
-            (num_entries, queue);
-        queue.copy(content, res.columns[i].content, num_entries).wait();
-        sycl::free(content, queue);
+        if (load_on_device)
+        {
+            res.columns[i].content =
+                #if ALLOC_ON_HOST
+                sycl::malloc_host<int>
+                #else
+                sycl::malloc_device<int>
+                #endif
+                (num_entries, queue);
+            queue.memcpy(content, res.columns[i].content, num_entries * sizeof(int)).wait();
+            sycl::free(content, queue);
+        }
+        else
+        {
+            res.columns[i].content = content;
+        }
+
+
 
         res.col_len = num_entries;
         res.columns[i].has_ownership = true;
@@ -118,7 +127,7 @@ std::map<std::string, TableData<int>> preload_all_tables(sycl::queue &queue)
         const std::string &table_name = table_entry.first;
         const std::set<int> &columns = table_entry.second;
 
-        tables[table_name] = loadTable(table_name, table_column_numbers[table_name], columns, queue);
+        tables[table_name] = loadTable(table_name, table_column_numbers[table_name], columns, queue, false);
     }
 
     return tables;
