@@ -150,8 +150,7 @@ sycl::event full_join(
     int build_column = build_table.column_indices.at(build_col_index),
         probe_column = probe_table.column_indices.at(probe_col_index),
         group_by_column = build_table.column_indices.at(build_table.group_by_column),
-        ht_len = build_table.columns[build_column].max_value - build_table.columns[build_column].min_value + 1,
-        *ht;
+        build_col_min, build_col_max, ht_len, *ht;
 
     #if PRINT_JOIN_DEBUG_INFO
     auto start = std::chrono::high_resolution_clock::now();
@@ -161,9 +160,16 @@ sycl::event full_join(
     if (build_table.ht != nullptr)
     {
         ht = (int *)build_table.ht;
+        build_col_min = build_table.ht_min;
+        build_col_max = build_table.ht_max;
+        ht_len = build_col_max - build_col_min + 1;
     }
     else
     {
+        build_col_min = build_table.columns[build_column].min_value;
+        build_col_max = build_table.columns[build_column].max_value;
+        ht_len = build_col_max - build_col_min + 1;
+
         ht = sycl::malloc_device<int>(ht_len * 2, queue);
 
         auto e1 = queue.fill(ht, 0, ht_len * 2);
@@ -180,7 +186,7 @@ sycl::event full_join(
             build_table.columns[build_column].content,
             build_table.columns[group_by_column].content,
             build_table.flags, build_table.col_len, ht, ht_len,
-            build_table.columns[build_column].min_value, queue, events);
+            build_col_min, queue, events);
 
         #if PRINT_JOIN_DEBUG_INFO
         end = std::chrono::high_resolution_clock::now();
@@ -195,9 +201,7 @@ sycl::event full_join(
     }
 
     bool *probe_flags = probe_table.flags;
-    int *probe_content = probe_table.columns[probe_column].content,
-        build_col_min = build_table.columns[build_column].min_value,
-        build_col_max = build_table.columns[build_column].max_value;
+    int *probe_content = probe_table.columns[probe_column].content;
 
     #if PRINT_JOIN_DEBUG_INFO
     start = std::chrono::high_resolution_clock::now();

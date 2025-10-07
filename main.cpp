@@ -115,6 +115,41 @@ std::chrono::duration<double, std::milli> execute_result(const PlanResult &resul
         if (exec_info.group_by_columns.find(rel.tables[1]) != exec_info.group_by_columns.end())
             tables[current_table].group_by_column = exec_info.group_by_columns[rel.tables[1]];
         output_table[rel.id] = current_table;
+
+        if (rel.tables[1] != "lineorder" && exec_info.prepare_join.find(rel.tables[1]) != exec_info.prepare_join.end())
+        {
+            auto [join_id, right_column_idx] = exec_info.prepare_join[rel.tables[1]];
+
+            TableData<int> &table_info = tables[current_table];
+            ColumnData<int> &column_info = table_info.columns[table_info.column_indices.at(right_column_idx)];
+
+            queue.wait();
+
+            if (exec_info.table_last_used[rel.tables[1]] == join_id)
+            {
+                // filter join ht
+                int ht_len = column_info.max_value - column_info.min_value + 1;
+                bool *ht = sycl::malloc_device<bool>(ht_len, queue);
+                queue.memset(ht, 0, sizeof(bool) * ht_len);
+
+                table_info.ht = ht;
+                table_info.ht_min = column_info.min_value;
+                table_info.ht_max = column_info.max_value;
+            }
+            else
+            {
+                // full join ht
+                int ht_len = column_info.max_value - column_info.min_value + 1,
+                    *ht = sycl::malloc_device<int>(ht_len * 2, queue);
+
+                queue.memset(ht, 0, sizeof(int) * ht_len * 2);
+
+                table_info.ht = ht;
+                table_info.ht_min = column_info.min_value;
+                table_info.ht_max = column_info.max_value;
+            }
+        }
+
         current_table++;
     }
 
@@ -299,42 +334,40 @@ std::chrono::duration<double, std::milli> execute_result(const PlanResult &resul
             break;
         }
 
-        if (exec_info.prepare_join.find(rel.id) != exec_info.prepare_join.end())
+        if (exec_info.prepare_join_id.find(rel.id) != exec_info.prepare_join_id.end())
         {
-            auto [join_id, right_column_idx] = exec_info.prepare_join[rel.id];
+            auto [join_id, right_column_idx] = exec_info.prepare_join_id[rel.id];
 
             TableData<int> &table_info = tables[output_table[rel.id]];
             ColumnData<int> &column_info = table_info.columns[table_info.column_indices.at(right_column_idx)];
 
             std::vector<sycl::event> &ht_dependencies = dependencies[rel.id];
 
+            if (table_info.ht == nullptr)
+            {
+                std::cerr << "!!!!! Table " << table_info.table_name
+                    << " does not have a hash table !!!!!" << std::endl;
+                continue;
+            }
+
             if (join_id == exec_info.table_last_used[table_info.table_name])
             {
                 // filter join ht
-                int ht_len = column_info.max_value - column_info.min_value + 1;
-                bool *ht = sycl::malloc_device<bool>(ht_len, queue);
-                auto e1 = queue.memset(ht, 0, sizeof(bool) * ht_len);
-                ht_dependencies.push_back(e1);
+                int ht_len = table_info.ht_max - table_info.ht_min + 1;
+                bool *ht = (bool *)table_info.ht;
 
                 auto e2 = build_keys_ht(column_info.content, table_info.flags, table_info.col_len, ht, ht_len, column_info.min_value, queue, ht_dependencies);
                 ht_dependencies = { e2 };
-
-                table_info.ht = ht;
             }
             else
             {
                 // full join ht
-                ColumnData<int> &group_by_column_info = table_info.columns[table_info.column_indices.at(table_info.group_by_column)];
-                int ht_len = column_info.max_value - column_info.min_value + 1,
-                    *ht = sycl::malloc_device<int>(ht_len * 2, queue);
-
-                auto e1 = queue.memset(ht, 0, sizeof(int) * ht_len * 2);
-                ht_dependencies.push_back(e1);
+                const ColumnData<int> &group_by_column_info = table_info.columns[table_info.column_indices.at(table_info.group_by_column)];
+                int ht_len = table_info.ht_max - table_info.ht_min + 1,
+                    *ht = (int *)table_info.ht;
 
                 auto e2 = build_key_vals_ht(column_info.content, group_by_column_info.content, table_info.flags, table_info.col_len, ht, ht_len, column_info.min_value, queue, ht_dependencies);
                 ht_dependencies = { e2 };
-
-                table_info.ht = ht;
             }
         }
     }
