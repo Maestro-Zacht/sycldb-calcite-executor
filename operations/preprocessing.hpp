@@ -17,6 +17,7 @@ struct ExecutionInfo
 {
     std::map<std::string, std::set<int>> loaded_columns;
     std::map<std::string, int> table_last_used, group_by_columns;
+    std::map<int, std::tuple<int, int>> prepare_join_id;
     std::map<std::string, std::tuple<int, int>> prepare_join;
     std::vector<int> dag_order;
 };
@@ -271,6 +272,7 @@ ExecutionInfo parse_execution_info(const PlanResult &result)
                     {
                         int right_column = rel.condition.operands[1].input - left_info.size();
                         info.prepare_join[table_name] = std::make_tuple(rel.id, right_column);
+                        info.prepare_join_id[previous_op_id] = std::make_tuple(rel.id, right_column);
                     }
                 }
 

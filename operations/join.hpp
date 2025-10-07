@@ -36,11 +36,23 @@ std::vector<sycl::event> parse_join(
     // filter joins if the right table is last accessed at this operation
     if (right_table.table_name != "" && table_last_used.at(right_table.table_name) == rel.id)
     {
+        int max_value, min_value;
+
+        if (right_table.ht != nullptr)
+        {
+            max_value = right_table.ht_max;
+            min_value = right_table.ht_min;
+        }
+        else
+        {
+            max_value = right_table.columns[right_table.column_indices.at(right_column)].max_value;
+            min_value = right_table.columns[right_table.column_indices.at(right_column)].min_value;
+        }
+
         event = filter_join(
             right_table.columns[right_table.column_indices.at(right_column)].content,
             right_table.flags, right_table.col_len,
-            right_table.columns[right_table.column_indices.at(right_column)].max_value,
-            right_table.columns[right_table.column_indices.at(right_column)].min_value,
+            max_value, min_value,
             left_table.columns[left_table.column_indices.at(left_column)].content,
             left_table.flags, left_table.col_len, (bool *)right_table.ht,
             resources, queue, dependencies);

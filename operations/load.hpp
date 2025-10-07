@@ -158,7 +158,7 @@ TableData<int> copy_table(const TableData<int> &table_data, const std::set<int> 
             sycl::malloc_device<int>
             #endif
             (table_data.col_len, queue);
-        queue.memcpy(table_data.columns[orig_col_idx].content, content, table_data.col_len * sizeof(int));
+        queue.copy(table_data.columns[orig_col_idx].content, content, table_data.col_len);
         res.columns[i].content = content;
         res.columns[i].has_ownership = true;
         res.columns[i].is_aggregate_result = false;
