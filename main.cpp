@@ -17,6 +17,7 @@
 #include "operations/aggregation.hpp"
 #include "operations/join.hpp"
 #include "operations/sort.hpp"
+#include "operations/memory_manager.hpp"
 
 #include "kernels/types.hpp"
 
@@ -26,7 +27,9 @@ using namespace apache::thrift::transport;
 
 #define PERFORMANCE_MEASUREMENT_ACTIVE 1
 #define PERFORMANCE_REPETITIONS 100
-#define USE_FUSION 1
+#define USE_FUSION 0
+
+#define SIZE_TEMP_MEMORY (((uint64_t)1) << 33) // 8GB
 
 class InitTimer;
 class EndTimer;
@@ -74,7 +77,15 @@ void save_result(const TableData<int> &table_data, const std::string &data_path)
     outfile.close();
 }
 
-std::chrono::duration<double, std::milli> execute_result(const PlanResult &result, const std::string &data_path, const std::map<std::string, TableData<int>> &all_tables, sycl::queue &queue, std::ostream &perf_out = std::cout)
+std::chrono::duration<double, std::milli> execute_result(
+    const PlanResult &result,
+    const std::string &data_path,
+    const std::map<std::string,
+    TableData<int>> &all_tables,
+    memory_manager &gpu_allocator,
+    sycl::queue &queue,
+    std::ostream &perf_out = std::cout
+)
 {
 
     #if PERFORMANCE_MEASUREMENT_ACTIVE
@@ -110,7 +121,7 @@ std::chrono::duration<double, std::milli> execute_result(const PlanResult &resul
         }
 
         const std::set<int> &column_idxs = exec_info.loaded_columns[rel.tables[1]];
-        tables[current_table] = copy_table(all_tables.at(rel.tables[1]), column_idxs, queue);
+        tables[current_table] = copy_table(all_tables.at(rel.tables[1]), column_idxs, gpu_allocator, queue);
 
         if (exec_info.group_by_columns.find(rel.tables[1]) != exec_info.group_by_columns.end())
             tables[current_table].group_by_column = exec_info.group_by_columns[rel.tables[1]];
@@ -129,8 +140,7 @@ std::chrono::duration<double, std::milli> execute_result(const PlanResult &resul
             {
                 // filter join ht
                 int ht_len = column_info.max_value - column_info.min_value + 1;
-                bool *ht = sycl::malloc_device<bool>(ht_len, queue);
-                queue.memset(ht, 0, sizeof(bool) * ht_len);
+                bool *ht = gpu_allocator.alloc<bool>(ht_len);
 
                 table_info.ht = ht;
                 table_info.ht_min = column_info.min_value;
@@ -140,9 +150,7 @@ std::chrono::duration<double, std::milli> execute_result(const PlanResult &resul
             {
                 // full join ht
                 int ht_len = column_info.max_value - column_info.min_value + 1,
-                    *ht = sycl::malloc_device<int>(ht_len * 2, queue);
-
-                queue.memset(ht, 0, sizeof(int) * ht_len * 2);
+                    *ht = gpu_allocator.alloc<int>(ht_len * 2);
 
                 table_info.ht = ht;
                 table_info.ht_min = column_info.min_value;
@@ -193,7 +201,7 @@ std::chrono::duration<double, std::milli> execute_result(const PlanResult &resul
                 rel.condition,
                 tables[output_table[rel.id - 1]],
                 "",
-                resources,
+                gpu_allocator,
                 queue,
                 dependencies[rel.id - 1]
             );
@@ -217,6 +225,7 @@ std::chrono::duration<double, std::milli> execute_result(const PlanResult &resul
                 rel.exprs,
                 tables[output_table[rel.id - 1]],
                 resources,
+                gpu_allocator,
                 queue,
                 dependencies[rel.id - 1]
             );
@@ -250,6 +259,7 @@ std::chrono::duration<double, std::milli> execute_result(const PlanResult &resul
                 rel.aggs[0],
                 rel.group,
                 resources,
+                gpu_allocator,
                 queue,
                 dependencies[rel.id - 1]
             );
@@ -279,7 +289,7 @@ std::chrono::duration<double, std::milli> execute_result(const PlanResult &resul
                 tables[output_table[rel.inputs[0]]],
                 tables[output_table[rel.inputs[1]]],
                 exec_info.table_last_used,
-                resources,
+                gpu_allocator,
                 queue,
                 join_dependencies
             );
@@ -431,13 +441,7 @@ std::chrono::duration<double, std::milli> execute_result(const PlanResult &resul
 
     for (int i = 0; i < current_table; i++)
     {
-        sycl::free(tables[i].flags, queue);
-        for (int j = 0; j < tables[i].columns_size; j++)
-            if (tables[i].columns[j].has_ownership)
-                sycl::free(tables[i].columns[j].content, queue);
         sycl::free(tables[i].columns, queue);
-        if (tables[i].ht != nullptr)
-            sycl::free(tables[i].ht, queue);
     }
     sycl::free(output_table, queue);
 
@@ -461,6 +465,7 @@ int main(int argc, char **argv)
     CalciteServerClient client(protocol);
     std::string sql;
     sycl::queue queue{ sycl::gpu_selector_v, sycl::ext::codeplay::experimental::property::queue::enable_fusion {} };
+    memory_manager gpu_allocator(queue, SIZE_TEMP_MEMORY); // memory manager for temporary allocations during query execution
 
     #if not PERFORMANCE_MEASUREMENT_ACTIVE
     std::cout << "Running on: " << queue.get_device().get_info<sycl::info::device::name>() << std::endl;
@@ -489,7 +494,7 @@ int main(int argc, char **argv)
         and lo_suppkey = s_suppkey;";
     }
 
-    auto all_tables = preload_all_tables(queue);
+    auto all_tables = preload_all_tables(queue, gpu_allocator);
 
     try
     {
@@ -513,7 +518,7 @@ int main(int argc, char **argv)
 
             auto start = std::chrono::high_resolution_clock::now();
             client.parse(result, sql);
-            auto exec_time = execute_result(result, argv[1], all_tables, queue, perf_file);
+            auto exec_time = execute_result(result, argv[1], all_tables, gpu_allocator, queue, perf_file);
             auto end = std::chrono::high_resolution_clock::now();
             std::chrono::duration<double, std::milli> total_time = end - start;
 

@@ -3,6 +3,7 @@
 #include <sycl/sycl.hpp>
 
 #include "types.hpp"
+#include "../operations/memory_manager.hpp"
 
 #define PRINT_AGGREGATE_DEBUG_INFO 0
 
@@ -195,7 +196,7 @@ std::tuple<
     int col_num,
     int col_len,
     const std::string &agg_op,
-    std::vector<void *> &resources,
+    memory_manager &gpu_allocator,
     sycl::queue &queue,
     const std::vector<sycl::event> &dependencies)
 {
@@ -222,34 +223,11 @@ std::tuple<
     int **results = sycl::malloc_shared<int *>(col_num, queue);
     for (int i = 0; i < col_num; i++)
     {
-        results[i] =
-            #if ALLOC_ON_HOST
-            sycl::malloc_host<int>
-            #else
-            sycl::malloc_device<int>
-            #endif
-            (prod_ranges, queue);
-
-        events.push_back(queue.memset(results[i], 0, sizeof(int) * prod_ranges));
+        results[i] = gpu_allocator.alloc<int>(prod_ranges);
     }
 
-    uint64_t *agg_result =
-        #if ALLOC_ON_HOST
-        sycl::malloc_host<uint64_t>
-        #else
-        sycl::malloc_device<uint64_t>
-        #endif
-        (prod_ranges, queue);
-    events.push_back(queue.memset(agg_result, 0, sizeof(uint64_t) * prod_ranges));
-
-    unsigned *res_flags =
-        #if ALLOC_ON_HOST
-        sycl::malloc_host<unsigned>
-        #else
-        sycl::malloc_device<unsigned>
-        #endif
-        (prod_ranges, queue);
-    events.push_back(queue.memset(res_flags, 0, sizeof(unsigned) * prod_ranges));
+    uint64_t *agg_result = gpu_allocator.alloc<uint64_t>(prod_ranges);
+    unsigned *res_flags = gpu_allocator.alloc<unsigned>(prod_ranges);
 
     #if PRINT_AGGREGATE_DEBUG_INFO
     end = std::chrono::high_resolution_clock::now();
@@ -311,58 +289,7 @@ std::tuple<
     start = std::chrono::high_resolution_clock::now();
     #endif
 
-    // for (int i = 0; i < prod_ranges; i++)
-    //     std::cout << i << " :: " << agg_result[i] << std::endl;
-
-    // std::cout << "prod ranges :: " << prod_ranges << "\nStarting group by aggregation kernel..." << std::endl;
-
-    // for (int i = 0; i < col_len; i++)
-    // {
-    //     if (flags[i])
-    //     {
-    //         unsigned hash = 0, mult = 1;
-    //         for (int j = 0; j < col_num; j++)
-    //         {
-    //             hash += (group_columns[j].content[i] - group_columns[j].min_value) * mult;
-    //             mult *= group_columns[j].max_value - group_columns[j].min_value + 1;
-    //         }
-    //         hash %= prod_ranges;
-
-    //         if (hash == 99)
-    //         {
-    //             if (group_columns[1].content[i] == 1995 && group_columns[0].content[i] == 24)
-    //             {
-    //                 std::cout << agg_column[i] << " -> " << agg_result[hash] << " (" << hash << ")" << std::endl;
-    //             }
-    //             else
-    //             {
-    //                 std::cout << "Unexpected group by result: " << group_columns[0].content[i] << ", " << group_columns[1].content[i] << " -> " << agg_column[i] << " (" << hash << ")" << std::endl;
-    //             }
-    //         }
-
-    //         if (res_flags[hash] == 0)
-    //         {
-    //             res_flags[hash] = 1;
-    //             for (int j = 0; j < col_num; j++)
-    //                 results[j * prod_ranges + hash] = group_columns[j].content[i];
-    //         }
-
-    //         if (agg_op == "SUM")
-    //             agg_result[hash] += agg_column[i];
-    //         else
-    //         {
-    //             // std::cout << "Unsupported aggregate operation: " << agg_op << std::endl;
-    //         }
-    //     }
-    // }
-
-    bool *final_flags =
-        #if ALLOC_ON_HOST
-        sycl::malloc_host<bool>
-        #else
-        sycl::malloc_device<bool>
-        #endif
-        (prod_ranges, queue);
+    bool *final_flags = gpu_allocator.alloc<bool>(prod_ranges);
     auto e5 = queue.submit(
         [&](sycl::handler &cgh)
         {
@@ -376,7 +303,6 @@ std::tuple<
             );
         }
     );
-    resources.push_back(res_flags);
 
     #if PRINT_AGGREGATE_DEBUG_INFO
     end = std::chrono::high_resolution_clock::now();

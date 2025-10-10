@@ -8,6 +8,8 @@
 #include "../kernels/types.hpp"
 #include "../kernels/join.hpp"
 
+#include "memory_manager.hpp"
+
 #include "../gen-cpp/calciteserver_types.h"
 
 std::vector<sycl::event> parse_join(
@@ -15,7 +17,7 @@ std::vector<sycl::event> parse_join(
     TableData<int> &left_table,
     TableData<int> &right_table,
     const std::map<std::string, int> &table_last_used,
-    std::vector<void *> &resources,
+    memory_manager &gpu_allocator,
     sycl::queue &queue,
     const std::vector<sycl::event> &dependencies)
 {
@@ -55,11 +57,11 @@ std::vector<sycl::event> parse_join(
             max_value, min_value,
             left_table.columns[left_table.column_indices.at(left_column)].content,
             left_table.flags, left_table.col_len, (bool *)right_table.ht,
-            resources, queue, dependencies);
+            gpu_allocator, queue, dependencies);
     }
     else if (left_table.table_name == "lineorder")
     {
-        event = full_join(left_table, right_table, left_column, right_column, resources, queue, dependencies);
+        event = full_join(left_table, right_table, left_column, right_column, gpu_allocator, queue, dependencies);
     }
     else
     {

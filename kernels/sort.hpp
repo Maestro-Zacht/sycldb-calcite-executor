@@ -84,8 +84,6 @@ void sort_table(TableData<int> &table_data, const int *sort_columns, const bool 
                 sorted_columns[i].content[j] = col_content[indices[j]];
         }
 
-        if (table_data.columns[i].has_ownership)
-            sycl::free(table_data.columns[i].content, queue);
         sycl::free(col_content, queue);
     }
 
@@ -96,7 +94,6 @@ void sort_table(TableData<int> &table_data, const int *sort_columns, const bool 
         sorted_flags[i] = table_flags[indices[i]];
 
     sycl::free(indices, queue);
-    sycl::free(table_data.flags, queue);
     sycl::free(table_flags, queue);
     sycl::free(table_data.columns, queue);
     delete[] columns_content;

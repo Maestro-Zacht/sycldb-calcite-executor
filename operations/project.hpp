@@ -7,12 +7,15 @@
 #include "../kernels/types.hpp"
 #include "../kernels/aggregation.hpp"
 
+#include "memory_manager.hpp"
+
 #include "../gen-cpp/calciteserver_types.h"
 
 std::vector<sycl::event> parse_project(
     const std::vector<ExprType> &exprs,
     TableData<int> &table_data,
     std::vector<void *> &resources,
+    memory_manager &gpu_allocator,
     sycl::queue &queue,
     const std::vector<sycl::event> &dependencies)
 {
@@ -34,13 +37,7 @@ std::vector<sycl::event> parse_project(
             break;
         case ExprOption::LITERAL:
             // create a new column with the literal value
-            new_columns[i].content =
-                #if ALLOC_ON_HOST
-                sycl::malloc_host<int>
-                #else
-                sycl::malloc_device<int>
-                #endif
-                (table_data.col_len, queue); // device
+            new_columns[i].content = gpu_allocator.alloc<int>(table_data.col_len);
             events = {
                 queue.fill(new_columns[i].content, (int)exprs[i].literal.value, table_data.col_len, std::move(events))
             };
@@ -56,13 +53,7 @@ std::vector<sycl::event> parse_project(
                 std::cerr << "Project operation: Unsupported number of operands for EXPR" << std::endl;
                 return {};
             }
-            new_columns[i].content =
-                #if ALLOC_ON_HOST
-                sycl::malloc_host<int>
-                #else
-                sycl::malloc_device<int>
-                #endif
-                (table_data.col_len, queue); // device
+            new_columns[i].content = gpu_allocator.alloc<int>(table_data.col_len);
             new_columns[i].has_ownership = true;
             new_columns[i].is_aggregate_result = false;
 
@@ -116,9 +107,6 @@ std::vector<sycl::event> parse_project(
     }
 
     // Free old columns and replace with new ones
-    for (int i = 0; i < table_data.columns_size; i++)
-        if (table_data.columns[i].has_ownership)
-            resources.push_back(table_data.columns[i].content);
     resources.push_back(table_data.columns);
 
     table_data.columns = new_columns;
