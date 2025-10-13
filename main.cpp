@@ -404,19 +404,20 @@ std::chrono::duration<double, std::milli> execute_result(
 
     #if not PERFORMANCE_MEASUREMENT_ACTIVE
     TableData<int> &final_table = tables[output_table[result.rels.size() - 1]];
+    memory_manager final_table_allocator(queue, ((uint64_t)1) << 30, true);
     for (int i = 0; i < final_table.columns_size; i++)
     {
         if (final_table.columns[i].has_ownership)
         {
             if (final_table.columns[i].is_aggregate_result)
             {
-                uint64_t *host_col = sycl::malloc_host<uint64_t>(final_table.col_len, queue);
+                uint64_t *host_col = final_table_allocator.alloc<uint64_t>(final_table.col_len);
                 queue.copy((uint64_t *)final_table.columns[i].content, host_col, final_table.col_len).wait();
                 final_table.columns[i].content = (int *)host_col;
             }
             else
             {
-                int *host_col = sycl::malloc_host<int>(final_table.col_len, queue);
+                int *host_col = final_table_allocator.alloc<int>(final_table.col_len);
                 queue.copy(final_table.columns[i].content, host_col, final_table.col_len).wait();
                 final_table.columns[i].content = host_col;
             }
@@ -425,7 +426,7 @@ std::chrono::duration<double, std::milli> execute_result(
             std::cout << "!!!!!!!!!! Column " << i << " does not have ownership, skipping copy to host !!!!!!!!!!" << std::endl;
     }
 
-    bool *host_flags = sycl::malloc_host<bool>(final_table.col_len, queue);
+    bool *host_flags = final_table_allocator.alloc<bool>(final_table.col_len);
     queue.copy(final_table.flags, host_flags, final_table.col_len).wait();
     final_table.flags = host_flags;
 
