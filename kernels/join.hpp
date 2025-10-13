@@ -2,6 +2,7 @@
 
 #include <sycl/sycl.hpp>
 
+#include "../operations/memory_manager.hpp"
 #include "types.hpp"
 
 #define PRINT_JOIN_DEBUG_INFO 0
@@ -83,7 +84,7 @@ sycl::event filter_join(
     bool probe_col_flags[],
     int probe_col_len,
     bool *build_ht,
-    std::vector<void *> &resources,
+    memory_manager &gpu_allocator,
     sycl::queue &queue,
     const std::vector<sycl::event> &dependencies)
 {
@@ -97,9 +98,7 @@ sycl::event filter_join(
     }
     else
     {
-        ht = sycl::malloc_device<bool>(ht_len, queue);
-        auto e1 = queue.fill(ht, false, ht_len);
-        events.push_back(e1);
+        ht = gpu_allocator.alloc<bool>(ht_len);
 
         auto e2 = build_keys_ht(build_col, build_flags, build_col_len, ht, ht_len, build_min_value, queue, events);
         events = { e2 };
@@ -131,9 +130,6 @@ sycl::event filter_join(
         }
     );
 
-    if (build_ht == nullptr)
-        resources.push_back(ht);
-
     return e3;
 }
 
@@ -142,7 +138,7 @@ sycl::event full_join(
     TableData<int> &build_table,
     int probe_col_index,
     int build_col_index,
-    std::vector<void *> &resources,
+    memory_manager &gpu_allocator,
     sycl::queue &queue,
     const std::vector<sycl::event> &dependencies)
 {
@@ -170,10 +166,7 @@ sycl::event full_join(
         build_col_max = build_table.columns[build_column].max_value;
         ht_len = build_col_max - build_col_min + 1;
 
-        ht = sycl::malloc_device<int>(ht_len * 2, queue);
-
-        auto e1 = queue.fill(ht, 0, ht_len * 2);
-        events.push_back(e1);
+        ht = gpu_allocator.alloc<int>(ht_len * 2);
 
         #if PRINT_JOIN_DEBUG_INFO
         auto end = std::chrono::high_resolution_clock::now();
@@ -246,9 +239,6 @@ sycl::event full_join(
     // update min and max values of the probe column
     probe_table.columns[probe_column].min_value = build_table.columns[group_by_column].min_value;
     probe_table.columns[probe_column].max_value = build_table.columns[group_by_column].max_value;
-
-    if (build_table.ht == nullptr)
-        resources.push_back(ht);
 
     #if PRINT_JOIN_DEBUG_INFO
     end = std::chrono::high_resolution_clock::now();

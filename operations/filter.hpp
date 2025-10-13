@@ -9,6 +9,7 @@
 
 #include "../kernels/types.hpp"
 #include "../kernels/selection.hpp"
+#include "memory_manager.hpp"
 
 // logicals are AND, OR etc. while comparisons are ==, <= etc.
 // So checking alpha characters is enough to determine if the operation is logical.
@@ -24,7 +25,7 @@ std::vector<sycl::event> parse_filter(
     const ExprType &expr,
     const TableData<int> table_data,
     std::string parent_op,
-    std::vector<void *> &resources,
+    memory_manager &gpu_allocator,
     sycl::queue &queue,
     const std::vector<sycl::event> &dependencies)
 {
@@ -40,7 +41,7 @@ std::vector<sycl::event> parse_filter(
     if (expr.op == "SEARCH")
     {
         int col_index = table_data.column_indices.at(expr.operands[0].input);
-        bool *local_flags = sycl::malloc_device<bool>(table_data.col_len, queue);
+        bool *local_flags = gpu_allocator.alloc<bool>(table_data.col_len);
         sycl::event last_event;
 
         if (expr.operands[1].literal.rangeSet.size() == 1) // range
@@ -87,7 +88,6 @@ std::vector<sycl::event> parse_filter(
                 }
             )
         );
-        resources.push_back(local_flags);
     }
     else if (is_filter_logical(expr.op))
     {
@@ -97,7 +97,7 @@ std::vector<sycl::event> parse_filter(
         std::vector<sycl::event> child_deps(dependencies);
         for (const ExprType &operand : expr.operands)
         {
-            child_deps = parse_filter(operand, table_data, parent_op_used ? expr.op : parent_op, resources, queue, std::move(child_deps));
+            child_deps = parse_filter(operand, table_data, parent_op_used ? expr.op : parent_op, gpu_allocator, queue, std::move(child_deps));
             parent_op_used = true;
         }
         events.insert(events.end(), child_deps.begin(), child_deps.end());

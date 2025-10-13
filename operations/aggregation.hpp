@@ -7,6 +7,8 @@
 #include "../kernels/types.hpp"
 #include "../kernels/aggregation.hpp"
 
+#include "memory_manager.hpp"
+
 #include "../gen-cpp/calciteserver_types.h"
 
 std::vector<sycl::event> parse_aggregate(
@@ -14,6 +16,7 @@ std::vector<sycl::event> parse_aggregate(
     const AggType &agg,
     const std::vector<long> &group,
     std::vector<void *> &resources,
+    memory_manager &gpu_allocator,
     sycl::queue &queue,
     const std::vector<sycl::event> &dependencies)
 {
@@ -26,13 +29,7 @@ std::vector<sycl::event> parse_aggregate(
 
     if (group.size() == 0)
     {
-        uint64_t *result =
-            #if ALLOC_ON_HOST
-            sycl::malloc_host<uint64_t>
-            #else
-            sycl::malloc_device<uint64_t>
-            #endif
-            (1, queue);
+        uint64_t *result = gpu_allocator.alloc<uint64_t>(1);
         events.push_back(aggregate_operation(result,
             table_data.columns[table_data.column_indices.at(agg.operands[0])].content,
             table_data.flags, table_data.col_len, agg.agg, queue, dependencies));
@@ -45,11 +42,7 @@ std::vector<sycl::event> parse_aggregate(
         #endif
 
         // Free old columns and replace with the result column
-        for (int i = 0; i < table_data.columns_size; i++)
-            if (table_data.columns[i].has_ownership)
-                resources.push_back(table_data.columns[i].content);
         resources.push_back(table_data.columns);
-        resources.push_back(table_data.flags);
         table_data.column_indices.clear();
 
         #if PRINT_AGGREGATE_DEBUG_INFO
@@ -77,13 +70,7 @@ std::vector<sycl::event> parse_aggregate(
         start = std::chrono::high_resolution_clock::now();
         #endif
 
-        table_data.flags =
-            #if ALLOC_ON_HOST
-            sycl::malloc_host<bool>
-            #else
-            sycl::malloc_device<bool>
-            #endif
-            (1, queue);
+        table_data.flags = gpu_allocator.alloc<bool>(1);
         events.push_back(queue.fill(table_data.flags, true, 1));
 
         #if PRINT_AGGREGATE_DEBUG_INFO
@@ -109,7 +96,7 @@ std::vector<sycl::event> parse_aggregate(
             group_columns,
             table_data.columns[table_data.column_indices.at(agg.operands[0])].content,
             table_data.flags, group.size(), table_data.col_len, agg.agg,
-            resources, queue, dependencies);
+            gpu_allocator, queue, dependencies);
 
         resources.push_back(group_columns);
 
@@ -121,11 +108,7 @@ std::vector<sycl::event> parse_aggregate(
         #endif
 
         // Free old columns and replace with the result columns
-        for (int i = 0; i < table_data.columns_size; i++)
-            if (table_data.columns[i].has_ownership)
-                resources.push_back(table_data.columns[i].content);
         resources.push_back(table_data.columns);
-        resources.push_back(table_data.flags);
         table_data.column_indices.clear();
 
         #if PRINT_AGGREGATE_DEBUG_INFO
@@ -150,6 +133,8 @@ std::vector<sycl::event> parse_aggregate(
             table_data.column_indices[i] = i;
         }
 
+        resources.push_back(results);
+
         #if PRINT_AGGREGATE_DEBUG_INFO
         end = std::chrono::high_resolution_clock::now();
         std::chrono::duration<double, std::milli> alloc_time = end - start;
@@ -167,9 +152,7 @@ std::vector<sycl::event> parse_aggregate(
         table_data.col_number = group.size() + 1;
         table_data.columns_size = group.size() + 1;
         table_data.col_len = std::get<1>(agg_res);
-        table_data.flags = std::get<2>(agg_res);
-
-        resources.push_back(std::get<0>(agg_res));
+        table_data.flags = std::get<2>(agg_res);;
 
         #if PRINT_AGGREGATE_DEBUG_INFO
         end = std::chrono::high_resolution_clock::now();
@@ -179,4 +162,4 @@ std::vector<sycl::event> parse_aggregate(
     }
 
     return events;
-}
+    }

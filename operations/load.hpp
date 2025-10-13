@@ -6,10 +6,17 @@
 #include <sycl/sycl.hpp>
 
 #include "../kernels/types.hpp"
+#include "memory_manager.hpp"
 
-#define DATA_DIR "/home/dust/ssb/s20_columnar/"
+#define DATA_DIR "/tmp/data/s20_columnar/"
 
-TableData<int> loadTable(std::string table_name, int col_number, const std::set<int> &columns, sycl::queue &queue, bool load_on_device = true)
+TableData<int> loadTable(
+    std::string table_name,
+    int col_number,
+    const std::set<int> &columns,
+    sycl::queue &queue,
+    memory_manager &gpu_allocator,
+    bool load_on_device = true)
 {
     TableData<int> res;
 
@@ -45,13 +52,7 @@ TableData<int> loadTable(std::string table_name, int col_number, const std::set<
 
         if (load_on_device)
         {
-            res.columns[i].content =
-                #if ALLOC_ON_HOST
-                sycl::malloc_host<int>
-                #else
-                sycl::malloc_device<int>
-                #endif
-                (num_entries, queue);
+            res.columns[i].content = gpu_allocator.alloc<int>(num_entries);
             queue.memcpy(content, res.columns[i].content, num_entries * sizeof(int)).wait();
             sycl::free(content, queue);
         }
@@ -107,18 +108,12 @@ TableData<int> loadTable(std::string table_name, int col_number, const std::set<
         << res.col_number << " columns ("
         << res.columns_size << " in memory)" << std::endl;
 
-    res.flags =
-        #if ALLOC_ON_HOST
-        sycl::malloc_host<bool>
-        #else
-        sycl::malloc_device<bool>
-        #endif
-        (res.col_len, queue);
+    res.flags = gpu_allocator.alloc<bool>(res.col_len);
     queue.fill(res.flags, true, res.col_len).wait();
     return res;
 }
 
-std::map<std::string, TableData<int>> preload_all_tables(sycl::queue &queue)
+std::map<std::string, TableData<int>> preload_all_tables(sycl::queue &queue, memory_manager &gpu_allocator)
 {
     std::map<std::string, TableData<int>> tables;
 
@@ -127,13 +122,17 @@ std::map<std::string, TableData<int>> preload_all_tables(sycl::queue &queue)
         const std::string &table_name = table_entry.first;
         const std::set<int> &columns = table_entry.second;
 
-        tables[table_name] = loadTable(table_name, table_column_numbers[table_name], columns, queue, false);
+        tables[table_name] = loadTable(table_name, table_column_numbers[table_name], columns, queue, gpu_allocator, false);
     }
 
     return tables;
 }
 
-TableData<int> copy_table(const TableData<int> &table_data, const std::set<int> &columns, sycl::queue &queue)
+TableData<int> copy_table(
+    const TableData<int> &table_data,
+    const std::set<int> &columns,
+    memory_manager &gpu_allocator,
+    sycl::queue &queue)
 {
     TableData<int> res;
 
@@ -151,13 +150,7 @@ TableData<int> copy_table(const TableData<int> &table_data, const std::set<int> 
         res.column_indices[col_idx] = i; // map the column index to the actual position
         int orig_col_idx = table_data.column_indices.at(col_idx);
 
-        int *content =
-            #if ALLOC_ON_HOST
-            sycl::malloc_host<int>
-            #else
-            sycl::malloc_device<int>
-            #endif
-            (table_data.col_len, queue);
+        int *content = gpu_allocator.alloc<int>(table_data.col_len);
         queue.copy(table_data.columns[orig_col_idx].content, content, table_data.col_len);
         res.columns[i].content = content;
         res.columns[i].has_ownership = true;
@@ -169,13 +162,7 @@ TableData<int> copy_table(const TableData<int> &table_data, const std::set<int> 
         i++;
     }
 
-    res.flags =
-        #if ALLOC_ON_HOST
-        sycl::malloc_host<bool>
-        #else
-        sycl::malloc_device<bool>
-        #endif
-        (res.col_len, queue);
+    res.flags = gpu_allocator.alloc<bool>(res.col_len);
     queue.copy(table_data.flags, res.flags, res.col_len);
     return res;
 }
