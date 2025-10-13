@@ -27,7 +27,7 @@ using namespace apache::thrift::transport;
 
 #define PERFORMANCE_MEASUREMENT_ACTIVE 1
 #define PERFORMANCE_REPETITIONS 100
-#define USE_FUSION 0
+#define USE_FUSION 1
 
 #define SIZE_TEMP_MEMORY (((uint64_t)1) << 33) // 8GB
 
@@ -82,12 +82,11 @@ std::chrono::duration<double, std::milli> execute_result(
     const std::string &data_path,
     const std::map<std::string,
     TableData<int>> &all_tables,
-    memory_manager &gpu_allocator,
     sycl::queue &queue,
     std::ostream &perf_out = std::cout
 )
 {
-
+    memory_manager gpu_allocator(queue, SIZE_TEMP_MEMORY, false); // memory manager for temporary allocations during query execution
     #if PERFORMANCE_MEASUREMENT_ACTIVE
     bool output_done = false;
     #endif
@@ -413,14 +412,12 @@ std::chrono::duration<double, std::milli> execute_result(
             {
                 uint64_t *host_col = sycl::malloc_host<uint64_t>(final_table.col_len, queue);
                 queue.copy((uint64_t *)final_table.columns[i].content, host_col, final_table.col_len).wait();
-                sycl::free(final_table.columns[i].content, queue);
                 final_table.columns[i].content = (int *)host_col;
             }
             else
             {
                 int *host_col = sycl::malloc_host<int>(final_table.col_len, queue);
                 queue.copy(final_table.columns[i].content, host_col, final_table.col_len).wait();
-                sycl::free(final_table.columns[i].content, queue);
                 final_table.columns[i].content = host_col;
             }
         }
@@ -430,7 +427,6 @@ std::chrono::duration<double, std::milli> execute_result(
 
     bool *host_flags = sycl::malloc_host<bool>(final_table.col_len, queue);
     queue.copy(final_table.flags, host_flags, final_table.col_len).wait();
-    sycl::free(final_table.flags, queue);
     final_table.flags = host_flags;
 
     // print_result(final_table);
@@ -465,7 +461,7 @@ int main(int argc, char **argv)
     CalciteServerClient client(protocol);
     std::string sql;
     sycl::queue queue{ sycl::gpu_selector_v, sycl::ext::codeplay::experimental::property::queue::enable_fusion {} };
-    memory_manager gpu_allocator(queue, SIZE_TEMP_MEMORY); // memory manager for temporary allocations during query execution
+    memory_manager table_allocator(queue, SIZE_TEMP_MEMORY, true); // memory manager for table allocations (on host)
 
     #if not PERFORMANCE_MEASUREMENT_ACTIVE
     std::cout << "Running on: " << queue.get_device().get_info<sycl::info::device::name>() << std::endl;
@@ -494,7 +490,7 @@ int main(int argc, char **argv)
         and lo_suppkey = s_suppkey;";
     }
 
-    auto all_tables = preload_all_tables(queue, gpu_allocator);
+    auto all_tables = preload_all_tables(queue, table_allocator);
 
     try
     {
@@ -518,7 +514,7 @@ int main(int argc, char **argv)
 
             auto start = std::chrono::high_resolution_clock::now();
             client.parse(result, sql);
-            auto exec_time = execute_result(result, argv[1], all_tables, gpu_allocator, queue, perf_file);
+            auto exec_time = execute_result(result, argv[1], all_tables, queue, perf_file);
             auto end = std::chrono::high_resolution_clock::now();
             std::chrono::duration<double, std::milli> total_time = end - start;
 
