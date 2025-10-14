@@ -461,7 +461,12 @@ int main(int argc, char **argv)
     std::shared_ptr<TProtocol> protocol(new TBinaryProtocol(transport));
     CalciteServerClient client(protocol);
     std::string sql;
-    sycl::queue queue{ sycl::gpu_selector_v, sycl::ext::codeplay::experimental::property::queue::enable_fusion {} };
+    sycl::queue queue{
+        sycl::gpu_selector_v,
+        #if USE_FUSION
+        sycl::ext::codeplay::experimental::property::queue::enable_fusion {}
+        #endif
+    };
     memory_manager table_allocator(queue, SIZE_TEMP_MEMORY, true); // memory manager for table allocations (on host)
 
     #if not PERFORMANCE_MEASUREMENT_ACTIVE
