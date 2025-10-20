@@ -40,7 +40,7 @@ T *memory_manager::alloc(uint64_t count)
 {
     uint64_t bytes = count * sizeof(T);
 
-    bytes = (bytes + 511) & (~511); // align to 512 bytes
+    bytes = (bytes + 7) & (~7); // align to 8 bytes
 
     if (allocated + bytes > size)
     {
