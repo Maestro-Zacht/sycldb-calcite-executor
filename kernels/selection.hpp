@@ -96,7 +96,7 @@ inline bool logical(logical_op logic, bool a, bool b)
 template <typename T>
 sycl::event selection(
     bool flags[],
-    T arr[],
+    const T arr[],
     std::string op,
     T value,
     std::string parent_op,
@@ -127,9 +127,9 @@ sycl::event selection(
 template <typename T>
 sycl::event selection(
     bool flags[],
-    T operand1[],
+    const T operand1[],
     std::string op,
-    T operand2[],
+    const T operand2[],
     std::string parent_op,
     int col_len,
     sycl::queue &queue,
