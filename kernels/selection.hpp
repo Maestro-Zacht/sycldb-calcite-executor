@@ -46,6 +46,16 @@ logical_op get_logical_op(std::string op)
         return NONE;
 }
 
+// logicals are AND, OR etc. while comparisons are ==, <= etc.
+// So checking alpha characters is enough to determine if the operation is logical.
+bool is_filter_logical(const std::string &op)
+{
+    for (int i = 0; i < op.length(); i++)
+        if (!isalpha(op[i]))
+            return false;
+    return true;
+}
+
 template <typename T>
 inline bool compare(comp_op CO, T a, T b)
 {

@@ -11,16 +11,6 @@
 #include "../kernels/selection.hpp"
 #include "memory_manager.hpp"
 
-// logicals are AND, OR etc. while comparisons are ==, <= etc.
-// So checking alpha characters is enough to determine if the operation is logical.
-bool is_filter_logical(const std::string &op)
-{
-    for (int i = 0; i < op.length(); i++)
-        if (!isalpha(op[i]))
-            return false;
-    return true;
-}
-
 std::vector<sycl::event> parse_filter(
     const ExprType &expr,
     const TableData<int> table_data,
@@ -29,7 +19,7 @@ std::vector<sycl::event> parse_filter(
     sycl::queue &queue,
     const std::vector<sycl::event> &dependencies)
 {
-    // Recursive parsing of EXRP types. LITERAL and COLUMN are handled in parent EXPR type.
+    // Recursive parsing of EXPR types. LITERAL and COLUMN are handled in parent EXPR type.
     if (expr.exprType != ExprOption::EXPR)
     {
         std::cerr << "Filter condition: Unsupported parsing ExprType " << expr.exprType << std::endl;

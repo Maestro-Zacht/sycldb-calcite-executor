@@ -19,15 +19,17 @@
 #include "operations/sort.hpp"
 #include "operations/memory_manager.hpp"
 
+#include "models/models.hpp"
+
 #include "kernels/types.hpp"
 
 using namespace apache::thrift;
 using namespace apache::thrift::protocol;
 using namespace apache::thrift::transport;
 
-#define PERFORMANCE_MEASUREMENT_ACTIVE 1
+#define PERFORMANCE_MEASUREMENT_ACTIVE 0
 #define PERFORMANCE_REPETITIONS 100
-#define USE_FUSION 1
+#define USE_FUSION 0
 
 #define SIZE_TEMP_MEMORY (((uint64_t)1) << 33) // 8GB
 
@@ -454,7 +456,7 @@ std::chrono::duration<double, std::milli> execute_result(
     return exec_time;
 }
 
-int main(int argc, char **argv)
+int normal_execution(int argc, char **argv)
 {
     std::shared_ptr<TTransport> socket(new TSocket("localhost", 5555));
     std::shared_ptr<TTransport> transport(new TBufferedTransport(socket));
@@ -556,4 +558,136 @@ int main(int argc, char **argv)
     }
 
     return 0;
+}
+
+int data_driven_operator_replacement(int argc, char **argv)
+{
+    sycl::queue gpu_queue{
+        sycl::gpu_selector_v,
+        #if USE_FUSION
+        sycl::ext::codeplay::experimental::property::queue::enable_fusion {}
+        #endif
+    }, cpu_queue{
+        sycl::cpu_selector_v,
+        #if USE_FUSION
+        sycl::ext::codeplay::experimental::property::queue::enable_fusion {}
+        #endif
+    };
+
+    Table tables[MAX_NTABLES] = {
+        Table("lineorder", gpu_queue, cpu_queue),
+        Table("part", gpu_queue, cpu_queue),
+        Table("supplier", gpu_queue, cpu_queue),
+        Table("customer", gpu_queue, cpu_queue),
+        Table("ddate", gpu_queue, cpu_queue)
+    };
+
+    #if not PERFORMANCE_MEASUREMENT_ACTIVE
+    std::cout << "Running on GPU: " << gpu_queue.get_device().get_info<sycl::info::device::name>()
+        << "\nRunning on CPU: " << cpu_queue.get_device().get_info<sycl::info::device::name>()
+        << std::endl;
+    #endif
+
+    for (int i = 0; i < MAX_NTABLES; i++)
+        tables[i].move_all_to_device();
+    gpu_queue.wait();
+
+    std::cout << "All tables moved to device." << std::endl;
+
+    return 0;
+}
+
+int test()
+{
+    sycl::queue gpu_queue{
+        sycl::gpu_selector_v,
+        #if USE_FUSION
+        sycl::ext::codeplay::experimental::property::queue::enable_fusion {}
+        #endif
+    }, cpu_queue{
+        sycl::cpu_selector_v,
+        #if USE_FUSION
+        sycl::ext::codeplay::experimental::property::queue::enable_fusion {}
+        #endif
+    };
+
+    uint64_t N = ((uint64_t)1 << 30);
+
+    uint64_t *data = sycl::malloc_host<uint64_t>(N, cpu_queue),
+        *data_device = sycl::malloc_device<uint64_t>(N, cpu_queue),
+        *data_host2 = sycl::malloc_host<uint64_t>(N, gpu_queue);
+
+    for (uint64_t i = 0; i < N; i++)
+        data[i] = i;
+
+    cpu_queue.parallel_for(
+        sycl::range<1>(N),
+        [=](sycl::id<1> idx)
+        {
+            data_device[idx] = idx[0];
+        }
+    ).wait();
+    cpu_queue.parallel_for(
+        sycl::range<1>(N),
+        [=](sycl::id<1> idx)
+        {
+            data_host2[idx] = idx[0];
+        }
+    ).wait();
+
+    for (int i = 0; i < 10; i++)
+    {
+        auto start = std::chrono::high_resolution_clock::now();
+        cpu_queue.parallel_for(
+            sycl::range<1>(N),
+            [=](sycl::id<1> idx)
+            {
+                data_device[idx] = data_device[idx] * 2;
+            }
+        ).wait();
+        auto end = std::chrono::high_resolution_clock::now();
+
+        std::chrono::duration<double, std::milli> compute_time = end - start;
+        std::cout << "Compute time on device: " << compute_time.count() << " ms" << std::endl;
+    }
+    for (int i = 0; i < 10; i++)
+    {
+        auto start = std::chrono::high_resolution_clock::now();
+        cpu_queue.parallel_for(
+            sycl::range<1>(N),
+            [=](sycl::id<1> idx)
+            {
+                data[idx] = data[idx] * 2;
+            }
+        ).wait();
+        auto end = std::chrono::high_resolution_clock::now();
+
+        std::chrono::duration<double, std::milli> compute_time = end - start;
+        std::cout << "Compute time on host: " << compute_time.count() << " ms" << std::endl;
+    }
+
+    for (int i = 0; i < 10; i++)
+    {
+        auto start = std::chrono::high_resolution_clock::now();
+        cpu_queue.parallel_for(
+            sycl::range<1>(N),
+            [=](sycl::id<1> idx)
+            {
+                data_host2[idx] = data_host2[idx] * 2;
+            }
+        ).wait();
+        auto end = std::chrono::high_resolution_clock::now();
+
+        std::chrono::duration<double, std::milli> compute_time = end - start;
+        std::cout << "Compute time on host2: " << compute_time.count() << " ms" << std::endl;
+    }
+
+    return 0;
+}
+
+int main(int argc, char **argv)
+{
+    return test();
+    // return normal_execution(argc, argv);
+    // return data_driven_operator_replacement(argc, argv);
 }
