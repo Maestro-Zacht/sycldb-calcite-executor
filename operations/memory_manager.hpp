@@ -44,37 +44,13 @@ T *memory_manager::alloc(uint64_t count)
 
     if (allocated + bytes > size)
     {
-        if (alloc_on_host)
-            memory_region = sycl::malloc_host<char>(size, queue);
-        else
-            memory_region = sycl::malloc_device<char>(size, queue);
-
-        queue.memset(memory_region, 0, size).wait();
-        current_free = memory_region;
+        throw std::bad_alloc();
     }
 
-    ~memory_manager()
-    {
-        sycl::free(memory_region, queue);
-    }
+    T *ptr = reinterpret_cast<T *>(current_free);
 
-    template <typename T>
-    T *alloc(uint64_t count)
-    {
-        uint64_t bytes = count * sizeof(T);
+    current_free += bytes;
+    allocated += bytes;
 
-        bytes = (bytes + 511) & (~511); // align to 512 bytes
-
-        if (allocated + bytes > size)
-        {
-            throw std::bad_alloc();
-        }
-
-        T *ptr = reinterpret_cast<T *>(current_free);
-
-        current_free += bytes;
-        allocated += bytes;
-
-        return ptr;
-    }
-};
+    return ptr;
+}
