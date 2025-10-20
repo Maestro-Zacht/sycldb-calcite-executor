@@ -20,6 +20,7 @@
 #include "operations/memory_manager.hpp"
 
 #include "models/models.hpp"
+#include "models/transient_table.hpp"
 
 #include "kernels/types.hpp"
 
@@ -560,8 +561,74 @@ int normal_execution(int argc, char **argv)
     return 0;
 }
 
+std::chrono::duration<double, std::milli> ddor_execute_result(
+    const PlanResult &result,
+    const std::string &data_path,
+    Table tables[MAX_NTABLES],
+    sycl::queue &gpu_queue,
+    sycl::queue &cpu_queue,
+    std::ostream &perf_out = std::cout)
+{
+    #if PERFORMANCE_MEASUREMENT_ACTIVE
+    bool output_done = false;
+    #endif
+
+    #if USE_FUSION
+    sycl::ext::codeplay::experimental::fusion_wrapper fw_gpu{ gpu_queue }, fw_cpu{ cpu_queue };
+    bool fusion_active = false;
+    #endif
+
+    ExecutionInfo exec_info = parse_execution_info(result);
+    std::vector<int> output_table(result.rels.size(), -1);
+    std::vector<TransientTable> transient_tables;
+
+    for (const RelNode &rel : result.rels)
+    {
+        if (rel.relOp != RelNodeType::TABLE_SCAN)
+            continue;
+
+        #if not PERFORMANCE_MEASUREMENT_ACTIVE
+        std::cout << "Table Scan on: " << rel.tables[1] << std::endl;
+        #endif
+
+        if (exec_info.loaded_columns.find(rel.tables[1]) == exec_info.loaded_columns.end())
+        {
+            std::cerr << "Table " << rel.tables[1] << " was never loaded." << std::endl;
+            return std::chrono::duration<double, std::milli>::zero();
+        }
+
+        Table *table_ptr = nullptr;
+        for (int i = 0; i < MAX_NTABLES; i++)
+        {
+            if (tables[i].get_name() == rel.tables[1])
+            {
+                table_ptr = &tables[i];
+                break;
+            }
+        }
+
+        if (table_ptr == nullptr)
+        {
+            std::cerr << "Table " << rel.tables[1] << " not found among loaded tables." << std::endl;
+            return std::chrono::duration<double, std::milli>::zero();
+        }
+
+        transient_tables.emplace_back(table_ptr, gpu_queue, cpu_queue);
+
+        output_table[rel.id] = transient_tables.size() - 1;
+    }
+
+
+    return std::chrono::duration<double, std::milli>::zero();
+}
+
 int data_driven_operator_replacement(int argc, char **argv)
 {
+    std::shared_ptr<TTransport> socket(new TSocket("localhost", 5555));
+    std::shared_ptr<TTransport> transport(new TBufferedTransport(socket));
+    std::shared_ptr<TProtocol> protocol(new TBinaryProtocol(transport));
+    CalciteServerClient client(protocol);
+    std::string sql;
     sycl::queue gpu_queue{
         sycl::gpu_selector_v,
         #if USE_FUSION
@@ -573,6 +640,29 @@ int data_driven_operator_replacement(int argc, char **argv)
         sycl::ext::codeplay::experimental::property::queue::enable_fusion {}
         #endif
     };
+
+    if (argc == 2)
+    {
+        std::ifstream file(argv[1]);
+        if (!file.is_open())
+        {
+            std::cerr << "Could not open file: " << argv[1] << std::endl;
+            return 1;
+        }
+
+        sql.assign((std::istreambuf_iterator<char>(file)),
+            std::istreambuf_iterator<char>());
+
+        file.close();
+    }
+    else
+    {
+        sql = "select sum(lo_revenue)\
+        from lineorder, ddate, part, supplier\
+        where lo_orderdate = d_datekey\
+        and lo_partkey = p_partkey\
+        and lo_suppkey = s_suppkey;";
+    }
 
     Table tables[MAX_NTABLES] = {
         Table("lineorder", gpu_queue, cpu_queue),
@@ -593,6 +683,62 @@ int data_driven_operator_replacement(int argc, char **argv)
     gpu_queue.wait();
 
     std::cout << "All tables moved to device." << std::endl;
+
+    try
+    {
+        // std::cout << "SQL Query: " << sql << std::endl;
+        transport->open();
+        std::cout << "Transport opened successfully." << std::endl;
+
+        #if PERFORMANCE_MEASUREMENT_ACTIVE
+        std::string sql_filename = argv[1];
+        std::string query_name = sql_filename.substr(sql_filename.find_last_of("/") + 1, 3);
+        std::ofstream perf_file(query_name + "-performance-cxl.log", std::ios::out | std::ios::trunc);
+        if (!perf_file.is_open())
+        {
+            std::cerr << "Could not open performance log file: " << query_name << "-performance-cxl.log" << std::endl;
+            return 1;
+        }
+
+        for (int i = 0; i < PERFORMANCE_REPETITIONS; i++)
+        {
+            // PlanResult result;
+
+            // auto start = std::chrono::high_resolution_clock::now();
+            // client.parse(result, sql);
+            // auto exec_time = execute_result(result, argv[1], all_tables, queue, perf_file);
+            // auto end = std::chrono::high_resolution_clock::now();
+            // std::chrono::duration<double, std::milli> total_time = end - start;
+
+            // std::cout << "Repetition " << i + 1 << "/" << PERFORMANCE_REPETITIONS
+            //     << " - " << exec_time.count() << " ms - "
+            //     << total_time.count() << " ms" << std::endl;
+        }
+        perf_file.close();
+        #else
+        PlanResult result;
+        client.parse(result, sql);
+
+
+
+        #endif
+
+        // client.shutdown();
+
+        transport->close();
+    }
+    catch (TTransportException &e)
+    {
+        std::cerr << "Transport exception: " << e.what() << std::endl;
+    }
+    catch (TException &e)
+    {
+        std::cerr << "Thrift exception: " << e.what() << std::endl;
+    }
+    catch (...)
+    {
+        std::cerr << "Unknown exception" << std::endl;
+    }
 
     return 0;
 }

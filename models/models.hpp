@@ -92,8 +92,8 @@ public:
             int lower = std::stoi(expr.operands[1].literal.rangeSet[0][1]),
                 upper = std::stoi(expr.operands[1].literal.rangeSet[0][2]);
 
-            auto e1 = selection(local_flags, data, ">=", lower, "NONE", nrows, queue, dependencies);
-            last_event = selection(local_flags, data, "<=", upper, "AND", nrows, queue, { e1 });
+            last_event = selection(local_flags, data, ">=", lower, "NONE", nrows, queue, dependencies);
+            last_event = selection(local_flags, data, "<=", upper, "AND", nrows, queue, { last_event });
 
             // TODO: min and max here
             // table_data.columns[col_index].min_value = lower;
@@ -104,8 +104,8 @@ public:
             int first = std::stoi(expr.operands[1].literal.rangeSet[0][1]),
                 second = std::stoi(expr.operands[1].literal.rangeSet[1][1]);
 
-            auto e1 = selection(local_flags, data, "==", first, "NONE", nrows, queue, dependencies);
-            last_event = selection(local_flags, data, "==", second, "OR", nrows, queue, { e1 });
+            last_event = selection(local_flags, data, "==", first, "NONE", nrows, queue, dependencies);
+            last_event = selection(local_flags, data, "==", second, "OR", nrows, queue, { last_event });
         }
 
         logical_op logic = get_logical_op(parent_op);
@@ -243,6 +243,7 @@ public:
 
     uint64_t get_nrows() const { return nrows; }
     const std::vector<Column> &get_columns() const { return columns; }
+    const std::string &get_name() const { return table_name; }
 
     void move_all_to_device()
     {
