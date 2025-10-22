@@ -24,18 +24,38 @@
 
 #include "kernels/types.hpp"
 
+#include "common.hpp"
+
 using namespace apache::thrift;
 using namespace apache::thrift::protocol;
 using namespace apache::thrift::transport;
 
-#define PERFORMANCE_MEASUREMENT_ACTIVE 0
-#define PERFORMANCE_REPETITIONS 100
-#define USE_FUSION 0
+class InitTimer1;
+class InitTimer2;
+class InitTimer3;
+class EndTimer1;
+class EndTimer2;
+class EndTimer3;
 
-#define SIZE_TEMP_MEMORY (((uint64_t)1) << 33) // 8GB
+void sycl_exception_handler(sycl::exception_list exceptions)
+{
+    bool error = false;
+    for (const auto &e : exceptions)
+    {
+        try
+        {
+            std::rethrow_exception(e);
+        }
+        catch (sycl::exception &e)
+        {
+            std::cerr << "SYCL exception caught: " << e.what() << std::endl;
+            error = true;
+        }
+    }
 
-class InitTimer;
-class EndTimer;
+    if (error)
+        std::terminate();
+}
 
 void print_result(const TableData<int> &table_data)
 {
@@ -89,7 +109,7 @@ std::chrono::duration<double, std::milli> execute_result(
     std::ostream &perf_out = std::cout
 )
 {
-    memory_manager gpu_allocator(queue, SIZE_TEMP_MEMORY, false); // memory manager for temporary allocations during query execution
+    memory_manager gpu_allocator(queue, SIZE_TEMP_MEMORY_GPU, false); // memory manager for temporary allocations during query execution
     #if PERFORMANCE_MEASUREMENT_ACTIVE
     bool output_done = false;
     #endif
@@ -172,7 +192,7 @@ std::chrono::duration<double, std::milli> execute_result(
 
     queue.wait();
 
-    queue.single_task<InitTimer>([=]() {}).wait();
+    queue.single_task<InitTimer1>([=]() {}).wait();
 
     auto start = std::chrono::high_resolution_clock::now();
 
@@ -317,7 +337,7 @@ std::chrono::duration<double, std::milli> execute_result(
             #endif
 
             queue.wait();
-            queue.single_task<EndTimer>([=]() {}).wait();
+            queue.single_task<EndTimer1>([=]() {}).wait();
 
             auto start_sort = std::chrono::high_resolution_clock::now();
             #if not PERFORMANCE_MEASUREMENT_ACTIVE
@@ -470,7 +490,7 @@ int normal_execution(int argc, char **argv)
         sycl::ext::codeplay::experimental::property::queue::enable_fusion {}
         #endif
     };
-    memory_manager table_allocator(queue, SIZE_TEMP_MEMORY, true); // memory manager for table allocations (on host)
+    memory_manager table_allocator(queue, SIZE_TEMP_MEMORY_CPU, true); // memory manager for table allocations (on host)
 
     #if not PERFORMANCE_MEASUREMENT_ACTIVE
     std::cout << "Running on: " << queue.get_device().get_info<sycl::info::device::name>() << std::endl;
@@ -581,6 +601,9 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
     ExecutionInfo exec_info = parse_execution_info(result);
     std::vector<int> output_table(result.rels.size(), -1);
     std::vector<TransientTable> transient_tables;
+    memory_manager gpu_allocator(gpu_queue, SIZE_TEMP_MEMORY_GPU, false);
+    memory_manager cpu_allocator(cpu_queue, SIZE_TEMP_MEMORY_CPU, true);
+    std::map<int, std::vector<sycl::event>> dependencies; // used to track dependencies between operations
 
     for (const RelNode &rel : result.rels)
     {
@@ -618,8 +641,103 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
         output_table[rel.id] = transient_tables.size() - 1;
     }
 
+    #if not PERFORMANCE_MEASUREMENT_ACTIVE
+    std::cout << "Execution order: ";
+    for (int id : exec_info.dag_order)
+        std::cout << id << " -> ";
+    std::cout << std::endl;
+    #endif
 
-    return std::chrono::duration<double, std::milli>::zero();
+    gpu_queue.wait();
+    cpu_queue.wait();
+
+    gpu_queue.single_task<InitTimer2>([=]() {}).wait();
+    cpu_queue.single_task<InitTimer3>([=]() {}).wait();
+
+    auto start = std::chrono::high_resolution_clock::now();
+
+    for (int id : exec_info.dag_order)
+    {
+        const RelNode &rel = result.rels[id];
+        switch (rel.relOp)
+        {
+        case RelNodeType::TABLE_SCAN:
+            dependencies[id] = {};
+            #if USE_FUSION
+            if (rel.tables[1] == "lineorder")
+            {
+                fw_gpu.start_fusion();
+                fw_cpu.start_fusion();
+                fusion_active = true;
+            }
+            #endif
+
+            break;
+        case RelNodeType::FILTER:
+        {
+            #if not PERFORMANCE_MEASUREMENT_ACTIVE
+            std::cout << "Starting Filter operation." << std::endl;
+            auto start_filter = std::chrono::high_resolution_clock::now();
+            #endif
+            int prev_table_idx = output_table[id - 1];
+            dependencies[id] = transient_tables[prev_table_idx].apply_filter(
+                rel.condition,
+                "",
+                gpu_allocator,
+                cpu_allocator,
+                dependencies[id - 1]
+            );
+            output_table[id] = prev_table_idx;
+            #if not PERFORMANCE_MEASUREMENT_ACTIVE
+            auto end_filter = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double, std::milli> filter_time = end_filter - start_filter;
+            std::cout << "Filter operation (" << filter_time.count() << " ms)" << std::endl;
+            #endif
+            break;
+        }
+        case RelNodeType::PROJECT:
+        {
+            #if not PERFORMANCE_MEASUREMENT_ACTIVE
+            std::cout << "Starting Project operation." << std::endl;
+            auto start_project = std::chrono::high_resolution_clock::now();
+            #endif
+            int prev_table_idx = output_table[id - 1];
+            dependencies[id] = transient_tables[prev_table_idx].apply_project(
+                rel.exprs,
+                gpu_allocator,
+                cpu_allocator,
+                dependencies[id - 1]
+            );
+            output_table[id] = prev_table_idx;
+            #if not PERFORMANCE_MEASUREMENT_ACTIVE
+            auto end_project = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double, std::milli> project_time = end_project - start_project;
+            std::cout << "Project operation (" << project_time.count() << " ms)" << std::endl;
+            #endif
+            break;
+        }
+        default:
+            std::cerr << "RelNodeType " << rel.relOp << " not yet supported in DDOR." << std::endl;
+            break;
+        }
+    }
+
+    // std::cout << "Waiting for all operations to complete." << std::endl;
+
+    gpu_queue.wait();
+    cpu_queue.wait();
+
+    auto end = std::chrono::high_resolution_clock::now();
+
+    // std::cout << "All operations completed." << std::endl;
+
+    gpu_queue.single_task<EndTimer2>([=]() {}).wait();
+    cpu_queue.single_task<EndTimer3>([=]() {}).wait();
+
+    // std::cout << "end" << std::endl;
+
+    std::chrono::duration<double, std::milli> duration = end - start;
+    return duration;
 }
 
 int data_driven_operator_replacement(int argc, char **argv)
@@ -631,11 +749,13 @@ int data_driven_operator_replacement(int argc, char **argv)
     std::string sql;
     sycl::queue gpu_queue{
         sycl::gpu_selector_v,
+        // sycl_exception_handler,
         #if USE_FUSION
         sycl::ext::codeplay::experimental::property::queue::enable_fusion {}
         #endif
     }, cpu_queue{
         sycl::cpu_selector_v,
+        // sycl_exception_handler,
         #if USE_FUSION
         sycl::ext::codeplay::experimental::property::queue::enable_fusion {}
         #endif
@@ -664,19 +784,19 @@ int data_driven_operator_replacement(int argc, char **argv)
         and lo_suppkey = s_suppkey;";
     }
 
-    Table tables[MAX_NTABLES] = {
-        Table("lineorder", gpu_queue, cpu_queue),
-        Table("part", gpu_queue, cpu_queue),
-        Table("supplier", gpu_queue, cpu_queue),
-        Table("customer", gpu_queue, cpu_queue),
-        Table("ddate", gpu_queue, cpu_queue)
-    };
-
     #if not PERFORMANCE_MEASUREMENT_ACTIVE
     std::cout << "Running on GPU: " << gpu_queue.get_device().get_info<sycl::info::device::name>()
         << "\nRunning on CPU: " << cpu_queue.get_device().get_info<sycl::info::device::name>()
         << std::endl;
     #endif
+
+    Table tables[MAX_NTABLES] = {
+        Table("part", gpu_queue, cpu_queue),
+        Table("supplier", gpu_queue, cpu_queue),
+        Table("customer", gpu_queue, cpu_queue),
+        Table("ddate", gpu_queue, cpu_queue),
+        Table("lineorder", gpu_queue, cpu_queue),
+    };
 
     for (int i = 0; i < MAX_NTABLES; i++)
         tables[i].move_all_to_device();
@@ -693,10 +813,10 @@ int data_driven_operator_replacement(int argc, char **argv)
         #if PERFORMANCE_MEASUREMENT_ACTIVE
         std::string sql_filename = argv[1];
         std::string query_name = sql_filename.substr(sql_filename.find_last_of("/") + 1, 3);
-        std::ofstream perf_file(query_name + "-performance-cxl.log", std::ios::out | std::ios::trunc);
+        std::ofstream perf_file(query_name + "-performance-ddor.log", std::ios::out | std::ios::trunc);
         if (!perf_file.is_open())
         {
-            std::cerr << "Could not open performance log file: " << query_name << "-performance-cxl.log" << std::endl;
+            std::cerr << "Could not open performance log file: " << query_name << "-performance-ddor.log" << std::endl;
             return 1;
         }
 
@@ -719,7 +839,8 @@ int data_driven_operator_replacement(int argc, char **argv)
         PlanResult result;
         client.parse(result, sql);
 
-
+        auto time = ddor_execute_result(result, argv[1], tables, gpu_queue, cpu_queue);
+        std::cout << "DDOR execution completed in " << time.count() << " ms." << std::endl;
 
         #endif
 
@@ -833,7 +954,7 @@ int test()
 
 int main(int argc, char **argv)
 {
-    return test();
+    // return test();
     // return normal_execution(argc, argv);
-    // return data_driven_operator_replacement(argc, argv);
+    return data_driven_operator_replacement(argc, argv);
 }

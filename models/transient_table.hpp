@@ -14,12 +14,11 @@ private:
     sycl::queue gpu_queue, cpu_queue;
     std::vector<Column *> current_columns;
     std::vector<Column> materialized_columns;
+    uint64_t nrows;
 public:
     TransientTable(Table *base_table, sycl::queue &gpu_queue, sycl::queue &cpu_queue)
-        : gpu_queue(gpu_queue), cpu_queue(cpu_queue)
+        : gpu_queue(gpu_queue), cpu_queue(cpu_queue), nrows(base_table->get_nrows())
     {
-        uint64_t nrows = base_table->get_nrows();
-
         flags_gpu = sycl::malloc_device<bool>(nrows, gpu_queue);
         auto e1 = gpu_queue.fill<bool>(flags_gpu, true, nrows);
 
@@ -90,7 +89,7 @@ public:
             for (const ExprType &operand : expr.operands)
             {
                 child_deps = apply_filter(
-                    expr,
+                    operand,
                     parent_op_used ? expr.op : parent_op,
                     gpu_allocator,
                     cpu_allocator,
@@ -160,6 +159,176 @@ public:
             }
         }
 
+        return events;
+    }
+
+    std::vector<sycl::event> apply_project(
+        const std::vector<ExprType> &exprs,
+        memory_manager &gpu_allocator,
+        memory_manager &cpu_allocator,
+        const std::vector<sycl::event> &dependencies)
+    {
+        std::vector<sycl::event> events;
+        std::vector<Column *> new_columns;
+        new_columns.reserve(exprs.size());
+
+        for (size_t i = 0; i < exprs.size(); i++)
+        {
+            const ExprType &expr = exprs[i];
+            switch (expr.exprType)
+            {
+            case ExprOption::COLUMN:
+                new_columns.push_back(current_columns[expr.input]);
+                break;
+            case ExprOption::LITERAL:
+            {
+                materialized_columns.emplace_back(
+                    nrows,
+                    gpu_queue,
+                    cpu_queue,
+                    gpu_allocator,
+                    cpu_allocator,
+                    true
+                );
+                Column &new_col = materialized_columns.back();
+
+                auto fill_events = new_col.fill_with_literal((int)expr.literal.value);
+                events.insert(events.end(), fill_events.begin(), fill_events.end());
+
+                new_columns.push_back(&new_col);
+                break;
+            }
+            case ExprOption::EXPR:
+            {
+                if (expr.operands.size() != 2)
+                {
+                    std::cerr << "Project operation: Unsupported number of operands for EXPR" << std::endl;
+                    return {};
+                }
+
+                materialized_columns.emplace_back(
+                    nrows,
+                    gpu_queue,
+                    cpu_queue,
+                    gpu_allocator,
+                    cpu_allocator,
+                    true
+                );
+                Column &new_col = materialized_columns.back();
+
+                if (expr.operands[0].exprType == ExprOption::COLUMN &&
+                    expr.operands[1].exprType == ExprOption::COLUMN)
+                {
+                    const std::vector<Segment> &segments_a = current_columns[expr.operands[0].input]->get_segments();
+                    const std::vector<Segment> &segments_b = current_columns[expr.operands[1].input]->get_segments();
+                    std::vector<Segment> &segments_result = new_col.get_segments();
+
+                    if (segments_a.size() != segments_b.size())
+                    {
+                        std::cerr << "Project operation: Mismatched segment sizes between columns" << std::endl;
+                        return {};
+                    }
+
+                    for (size_t segment_number = 0; segment_number < segments_a.size(); segment_number++)
+                    {
+                        const Segment &segment_a = segments_a[segment_number];
+                        const Segment &segment_b = segments_b[segment_number];
+                        Segment &segment_result = segments_result[segment_number];
+
+                        bool on_device = segment_a.is_on_device();
+                        if (segment_b.is_on_device() != on_device || segment_result.is_on_device() != on_device)
+                        {
+                            std::cerr << "Project operation: Mismatched segment locations between columns" << std::endl;
+                            return {};
+                        }
+
+                        events.push_back(
+                            segment_result.perform_operator(
+                                segment_a,
+                                segment_b,
+                                (on_device ? flags_gpu : flags_host) + segment_number * SEGMENT_SIZE,
+                                expr.op,
+                                dependencies
+                            )
+                        );
+                    }
+                }
+                else if (expr.operands[0].exprType == ExprOption::LITERAL &&
+                    expr.operands[1].exprType == ExprOption::COLUMN)
+                {
+                    const std::vector<Segment> &segments = current_columns[expr.operands[1].input]->get_segments();
+                    std::vector<Segment> &segments_result = new_col.get_segments();
+
+                    for (size_t segment_number = 0; segment_number < segments.size(); segment_number++)
+                    {
+                        const Segment &segment = segments[segment_number];
+                        Segment &segment_result = segments_result[segment_number];
+
+                        bool on_device = segment.is_on_device();
+
+                        if (segment_result.is_on_device() != on_device)
+                        {
+                            std::cerr << "Project operation: Mismatched segment locations between columns" << std::endl;
+                            return {};
+                        }
+
+                        events.push_back(
+                            segment_result.perform_operator(
+                                (int)expr.operands[0].literal.value,
+                                segment,
+                                (on_device ? flags_gpu : flags_host) + segment_number * SEGMENT_SIZE,
+                                expr.op,
+                                dependencies
+                            )
+                        );
+                    }
+                }
+                else if (expr.operands[0].exprType == ExprOption::COLUMN &&
+                    expr.operands[1].exprType == ExprOption::LITERAL)
+                {
+                    const std::vector<Segment> &segments = current_columns[expr.operands[0].input]->get_segments();
+                    std::vector<Segment> &segments_result = new_col.get_segments();
+
+                    for (size_t segment_number = 0; segment_number < segments.size(); segment_number++)
+                    {
+                        const Segment &segment = segments[segment_number];
+                        Segment &segment_result = segments_result[segment_number];
+
+                        bool on_device = segment.is_on_device();
+
+                        if (segment_result.is_on_device() != on_device)
+                        {
+                            std::cerr << "Project operation: Mismatched segment locations between columns" << std::endl;
+                            return {};
+                        }
+
+                        events.push_back(
+                            segment_result.perform_operator(
+                                segment,
+                                (int)expr.operands[1].literal.value,
+                                (on_device ? flags_gpu : flags_host) + segment_number * SEGMENT_SIZE,
+                                expr.op,
+                                dependencies
+                            )
+                        );
+                    }
+                }
+                else
+                {
+                    std::cerr << "Project operation: Unsupported parsing ExprType "
+                        << expr.operands[0].exprType << " and "
+                        << expr.operands[1].exprType
+                        << " for EXPR" << std::endl;
+                    return {};
+                }
+
+                new_columns.push_back(&new_col);
+                break;
+            }
+            }
+        }
+
+        current_columns = new_columns;
         return events;
     }
 };
