@@ -20,7 +20,7 @@ private:
     int min, max;
     uint64_t nrows;
     sycl::queue gpu_queue, cpu_queue;
-    bool on_device, is_materialized;
+    bool on_device, is_aggregate_result, is_materialized, dirty_cache;
 public:
     Segment(const int *init_data, sycl::queue &gpu_queue, sycl::queue &cpu_queue, uint64_t count = SEGMENT_SIZE)
         :
@@ -29,7 +29,9 @@ public:
         gpu_queue(gpu_queue),
         cpu_queue(cpu_queue),
         on_device(false),
-        is_materialized(false)
+        is_aggregate_result(false),
+        is_materialized(false),
+        dirty_cache(false)
     {
         if (count > SEGMENT_SIZE)
             throw std::bad_alloc();
@@ -83,6 +85,7 @@ public:
         memory_manager &cpu_allocator,
         memory_manager &gpu_allocator,
         bool on_device,
+        bool is_aggregate_result,
         uint64_t count = SEGMENT_SIZE
     )
         :
@@ -90,24 +93,26 @@ public:
         gpu_queue(gpu_queue),
         cpu_queue(cpu_queue),
         on_device(on_device),
-        is_materialized(true)
+        is_aggregate_result(is_aggregate_result),
+        is_materialized(true),
+        dirty_cache(false)
     {
         if (count > SEGMENT_SIZE)
             throw std::bad_alloc();
 
-        if (on_device)
+        if (is_aggregate_result)
         {
-            data_host = nullptr;
-            data_device = gpu_allocator.alloc<int>(count);
+            data_host = reinterpret_cast<int *>(cpu_allocator.alloc<uint64_t>(count));
+            data_device = reinterpret_cast<int *>(gpu_allocator.alloc<uint64_t>(count));
         }
         else
         {
-            data_device = nullptr;
             data_host = cpu_allocator.alloc<int>(count);
+            data_device = gpu_allocator.alloc<int>(count);
         }
 
-        min = INT_MAX;
-        max = INT_MIN;
+        min = 0;
+        max = 0;
     }
 
     ~Segment()
@@ -125,9 +130,13 @@ public:
     {
         if (!is_materialized)
             throw std::runtime_error("Cannot fill non-materialized segment");
+        if (is_aggregate_result)
+            throw std::runtime_error("Cannot fill aggregate result segment with int literal");
 
         min = literal;
         max = literal;
+
+        dirty_cache = true;
 
         if (on_device)
             return gpu_queue.fill<int>(data_device, literal, nrows);
@@ -137,11 +146,64 @@ public:
 
     bool is_on_device() const { return on_device; }
 
-    int *get_data(bool device) const
+    const int *get_data(bool device) const
     {
         if (device && !on_device)
             throw std::runtime_error("Segment data requested on device but it is on host");
+        if (is_aggregate_result)
+            throw std::runtime_error("Segment data requested but it is an aggregate result");
         return device ? data_device : data_host;
+    }
+
+    int *get_data(bool device)
+    {
+        return const_cast<int *>(static_cast<const Segment &>(*this).get_data(device));
+    }
+
+    const uint64_t *get_aggregate_data(bool device) const
+    {
+        if (device && !on_device)
+            throw std::runtime_error("Segment data requested on device but it is on host");
+        if (!is_aggregate_result)
+            throw std::runtime_error("Segment aggregate data requested but it is not an aggregate result");
+        return reinterpret_cast<uint64_t *>(device ? data_device : data_host);
+    }
+
+    uint64_t *get_aggregate_data(bool device)
+    {
+        dirty_cache = true;
+        return const_cast<uint64_t *>(static_cast<const Segment &>(*this).get_aggregate_data(device));
+    }
+
+    const int &operator[](uint64_t index) const
+    {
+        if (index >= nrows)
+            throw std::out_of_range("Segment index out of range");
+        if (is_aggregate_result)
+            throw std::runtime_error("wrong operator[]");
+
+        const_cast<Segment &>(*this).copy_on_host().wait();
+
+        return data_host[index];
+    }
+
+    const uint64_t &get_aggregate_value(uint64_t index) const
+    {
+        if (index >= nrows)
+            throw std::out_of_range("Segment index out of range");
+        if (!is_aggregate_result)
+            throw std::runtime_error("wrong get_aggregate_value");
+
+        const_cast<Segment &>(*this).copy_on_host().wait();
+
+        return reinterpret_cast<uint64_t *>(data_host)[index];
+    }
+
+    uint64_t get_data_size(bool gpu_only = false) const
+    {
+        if (gpu_only && !on_device)
+            return 0;
+        return nrows * (is_aggregate_result ? sizeof(uint64_t) : sizeof(int));
     }
 
     sycl::event move_to_device()
@@ -154,6 +216,29 @@ public:
 
         on_device = true;
         return gpu_queue.memcpy(data_device, data_host, nrows * sizeof(int));
+    }
+
+    sycl::event copy_on_host()
+    {
+        sycl::event e;
+
+        if (on_device && dirty_cache)
+        {
+            if (is_aggregate_result)
+                e = gpu_queue.memcpy(
+                    reinterpret_cast<uint64_t *>(data_host),
+                    reinterpret_cast<uint64_t *>(data_device),
+                    nrows * sizeof(uint64_t)
+                );
+            else
+                e = gpu_queue.memcpy(data_host, data_device, nrows * sizeof(int));
+
+            dirty_cache = false;
+        }
+        else
+            e = sycl::event();
+
+        return e;
     }
 
     sycl::event search_operator(
@@ -273,6 +358,8 @@ public:
         min = std::min(first_operand.min, second_operand.min);
         max = std::max(first_operand.max, second_operand.max);
 
+        dirty_cache = true;
+
         return e;
     }
 
@@ -296,6 +383,8 @@ public:
 
         min = first_operand.min;
         max = first_operand.max;
+
+        dirty_cache = true;
 
         return e;
     }
@@ -321,7 +410,26 @@ public:
         min = second_operand.min;
         max = second_operand.max;
 
+        dirty_cache = true;
+
         return e;
+    }
+
+    sycl::event aggregate_operator(
+        uint64_t *result,
+        const bool *flags,
+        const std::string &op,
+        const std::vector<sycl::event> &dependencies) const
+    {
+        return aggregate_operation(
+            result,
+            on_device ? data_device : data_host,
+            flags,
+            nrows,
+            op,
+            const_cast<sycl::queue &>(on_device ? gpu_queue : cpu_queue),
+            dependencies
+        );
     }
 };
 
@@ -330,8 +438,15 @@ class Column
 {
 private:
     std::vector<Segment> segments;
+    bool is_aggregate_result;
 public:
+    Column() : is_aggregate_result(false)
+    {
+        std::cerr << "Warning: Empty column created" << std::endl;
+    }
+
     Column(const int *init_data, uint64_t nrows, sycl::queue &gpu_queue, sycl::queue &cpu_queue)
+        : is_aggregate_result(false)
     {
         uint64_t full_segments = nrows / SEGMENT_SIZE;
         uint64_t remainder = nrows % SEGMENT_SIZE;
@@ -351,7 +466,9 @@ public:
         sycl::queue &cpu_queue,
         memory_manager &gpu_allocator,
         memory_manager &cpu_allocator,
-        bool on_device)
+        bool on_device,
+        bool is_aggregate_result)
+        : is_aggregate_result(is_aggregate_result)
     {
         uint64_t full_segments = nrows / SEGMENT_SIZE;
         uint64_t remainder = nrows % SEGMENT_SIZE;
@@ -359,14 +476,33 @@ public:
         segments.reserve(full_segments + (remainder > 0 ? 1 : 0));
 
         for (uint64_t i = 0; i < full_segments; i++)
-            segments.emplace_back(gpu_queue, cpu_queue, cpu_allocator, gpu_allocator, on_device);
+            segments.emplace_back(gpu_queue, cpu_queue, cpu_allocator, gpu_allocator, on_device, is_aggregate_result);
 
         if (remainder > 0)
-            segments.emplace_back(gpu_queue, cpu_queue, cpu_allocator, gpu_allocator, on_device, remainder);
+            segments.emplace_back(gpu_queue, cpu_queue, cpu_allocator, gpu_allocator, on_device, is_aggregate_result, remainder);
     }
 
     const std::vector<Segment> &get_segments() const { return segments; }
     std::vector<Segment> &get_segments() { return segments; }
+    bool get_is_aggregate_result() const { return is_aggregate_result; }
+
+    const int &operator[](uint64_t index) const
+    {
+        if (is_aggregate_result)
+            throw std::runtime_error("wrong operator[]");
+        uint64_t segment_index = index / SEGMENT_SIZE;
+        uint64_t offset = index % SEGMENT_SIZE;
+        return segments[segment_index][offset];
+    }
+
+    const uint64_t &get_aggregate_value(uint64_t index) const
+    {
+        if (!is_aggregate_result)
+            throw std::runtime_error("wrong get_aggregate_value");
+        uint64_t segment_index = index / SEGMENT_SIZE;
+        uint64_t offset = index % SEGMENT_SIZE;
+        return segments[segment_index].get_aggregate_value(offset);
+    }
 
     std::vector<sycl::event> fill_with_literal(int literal)
     {
@@ -383,6 +519,14 @@ public:
     {
         for (auto &seg : segments)
             seg.move_to_device();
+    }
+
+    uint64_t get_data_size(bool gpu_only = false) const
+    {
+        uint64_t total_size = 0;
+        for (const auto &seg : segments)
+            total_size += seg.get_data_size(gpu_only);
+        return total_size;
     }
 };
 
@@ -412,29 +556,42 @@ public:
             std::streampos fileSize = colData.tellg();
             uint64_t num_entries = static_cast<uint64_t>(fileSize / sizeof(int));
 
-            colData.seekg(0, std::ios::beg);
-
-            int *content = new int[num_entries];
-            colData.read((char *)content, num_entries * sizeof(int));
-            colData.close();
-
-            columns.emplace_back(content, num_entries, gpu_queue, cpu_queue);
-
-            delete[] content;
-
             if (i == 0)
                 nrows = num_entries;
-            else if (num_entries != nrows)
+
+            if (num_entries != nrows)
             {
                 // throw std::runtime_error("Column length mismatch in " + filename + ": expected " + std::to_string(nrows) + ", got " + std::to_string(num_entries));
                 std::cerr << "Warning: Column length mismatch in " << filename << ": expected " << nrows << ", got " << num_entries << std::endl;
+                columns.emplace_back();
             }
+            else
+            {
+                colData.seekg(0, std::ios::beg);
+
+                int *content = new int[num_entries];
+                colData.read((char *)content, num_entries * sizeof(int));
+
+                columns.emplace_back(content, num_entries, gpu_queue, cpu_queue);
+
+                delete[] content;
+            }
+
+            colData.close();
         }
     }
 
     uint64_t get_nrows() const { return nrows; }
     const std::vector<Column> &get_columns() const { return columns; }
     const std::string &get_name() const { return table_name; }
+
+    uint64_t get_data_size(bool gpu_only = false) const
+    {
+        uint64_t total_size = 0;
+        for (const auto &col : columns)
+            total_size += col.get_data_size(gpu_only);
+        return total_size;
+    }
 
     void move_all_to_device()
     {

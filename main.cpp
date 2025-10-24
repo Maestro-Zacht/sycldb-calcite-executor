@@ -100,6 +100,23 @@ void save_result(const TableData<int> &table_data, const std::string &data_path)
     outfile.close();
 }
 
+void save_result(const TransientTable &table, const std::string &data_path)
+{
+    std::string query_name = data_path.substr(data_path.find_last_of("/") + 1, 3);
+    std::cout << "Saving result to " << query_name << ".res" << std::endl;
+
+    std::ofstream outfile(query_name + ".res");
+    if (!outfile.is_open())
+    {
+        std::cerr << "Could not open result file for writing." << std::endl;
+        return;
+    }
+
+    outfile << table;
+
+    outfile.close();
+}
+
 std::chrono::duration<double, std::milli> execute_result(
     const PlanResult &result,
     const std::string &data_path,
@@ -593,10 +610,10 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
     bool output_done = false;
     #endif
 
-    #if USE_FUSION
-    sycl::ext::codeplay::experimental::fusion_wrapper fw_gpu{ gpu_queue }, fw_cpu{ cpu_queue };
-    bool fusion_active = false;
-    #endif
+    // #if USE_FUSION
+    // sycl::ext::codeplay::experimental::fusion_wrapper fw_gpu{ gpu_queue }, fw_cpu{ cpu_queue };
+    // bool fusion_active = false;
+    // #endif
 
     ExecutionInfo exec_info = parse_execution_info(result);
     std::vector<int> output_table(result.rels.size(), -1);
@@ -636,7 +653,7 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
             return std::chrono::duration<double, std::milli>::zero();
         }
 
-        transient_tables.emplace_back(table_ptr, gpu_queue, cpu_queue);
+        transient_tables.emplace_back(table_ptr, gpu_queue, cpu_queue, gpu_allocator, cpu_allocator);
 
         output_table[rel.id] = transient_tables.size() - 1;
     }
@@ -663,14 +680,14 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
         {
         case RelNodeType::TABLE_SCAN:
             dependencies[id] = {};
-            #if USE_FUSION
-            if (rel.tables[1] == "lineorder")
-            {
-                fw_gpu.start_fusion();
-                fw_cpu.start_fusion();
-                fusion_active = true;
-            }
-            #endif
+            // #if USE_FUSION
+            // if (rel.tables[1] == "lineorder")
+            // {
+            //     fw_gpu.start_fusion();
+            //     fw_cpu.start_fusion();
+            //     fusion_active = true;
+            // }
+            // #endif
 
             break;
         case RelNodeType::FILTER:
@@ -716,6 +733,28 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
             #endif
             break;
         }
+        case RelNodeType::AGGREGATE:
+        {
+            #if not PERFORMANCE_MEASUREMENT_ACTIVE
+            std::cout << "Starting Aggregate operation." << std::endl;
+            auto start_aggregate = std::chrono::high_resolution_clock::now();
+            #endif
+            int prev_table_idx = output_table[id - 1];
+            dependencies[id] = transient_tables[prev_table_idx].apply_aggregate(
+                rel.aggs[0],
+                rel.group,
+                gpu_allocator,
+                cpu_allocator,
+                dependencies[id - 1]
+            );
+            output_table[id] = prev_table_idx;
+            #if not PERFORMANCE_MEASUREMENT_ACTIVE
+            auto end_aggregate = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double, std::milli> aggregate_time = end_aggregate - start_aggregate;
+            std::cout << "Aggregate operation (" << aggregate_time.count() << " ms)" << std::endl;
+            #endif
+            break;
+        }
         default:
             std::cerr << "RelNodeType " << rel.relOp << " not yet supported in DDOR." << std::endl;
             break;
@@ -735,6 +774,13 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
     cpu_queue.single_task<EndTimer3>([=]() {}).wait();
 
     // std::cout << "end" << std::endl;
+
+    #if not PERFORMANCE_MEASUREMENT_ACTIVE
+    const TransientTable &final_table = transient_tables[output_table[result.rels.size() - 1]];
+
+    std::cout << "Final Result Table:\n" << final_table << "Number of rows: " << final_table.get_nrows() << std::endl;
+    save_result(final_table, data_path);
+    #endif
 
     std::chrono::duration<double, std::milli> duration = end - start;
     return duration;
@@ -802,7 +848,19 @@ int data_driven_operator_replacement(int argc, char **argv)
         tables[i].move_all_to_device();
     gpu_queue.wait();
 
+    #if not PERFORMANCE_MEASUREMENT_ACTIVE
     std::cout << "All tables moved to device." << std::endl;
+
+    uint64_t total_mem = 0, total_gpu_mem = 0;
+    for (int i = 0; i < MAX_NTABLES; i++)
+    {
+        total_mem += tables[i].get_data_size(false);
+        total_gpu_mem += tables[i].get_data_size(true);
+    }
+    std::cout << "Total memory used by tables: " << total_mem / ((uint64_t)1 << 20)
+        << " MB (GPU: " << total_gpu_mem / ((uint64_t)1 << 20) << " MB)" << std::endl;
+
+    #endif
 
     try
     {
@@ -878,76 +936,46 @@ int test()
         #endif
     };
 
-    uint64_t N = ((uint64_t)1 << 30);
+    uint64_t N = ((uint64_t)1 << 23);
+    const int num = 160;
 
-    uint64_t *data = sycl::malloc_host<uint64_t>(N, cpu_queue),
-        *data_device = sycl::malloc_device<uint64_t>(N, cpu_queue),
-        *data_host2 = sycl::malloc_host<uint64_t>(N, gpu_queue);
+    int *data_gpu[num];
+    for (int i = 0; i < num; i++)
+        data_gpu[i] = sycl::malloc_shared<int>(N, gpu_queue);
 
-    for (uint64_t i = 0; i < N; i++)
-        data[i] = i;
+    uint64_t *result = sycl::malloc_shared<uint64_t>(1, gpu_queue);
+    gpu_queue.memset(result, 0, sizeof(uint64_t));
 
-    cpu_queue.parallel_for(
-        sycl::range<1>(N),
-        [=](sycl::id<1> idx)
-        {
-            data_device[idx] = idx[0];
-        }
-    ).wait();
-    cpu_queue.parallel_for(
-        sycl::range<1>(N),
-        [=](sycl::id<1> idx)
-        {
-            data_host2[idx] = idx[0];
-        }
-    ).wait();
-
-    for (int i = 0; i < 10; i++)
+    for (int i = 0; i < 5; i++)
     {
-        auto start = std::chrono::high_resolution_clock::now();
-        cpu_queue.parallel_for(
+        int *data = data_gpu[i];
+        gpu_queue.parallel_for(
             sycl::range<1>(N),
             [=](sycl::id<1> idx)
             {
-                data_device[idx] = data_device[idx] * 2;
+                data[idx] = idx[0];
             }
-        ).wait();
-        auto end = std::chrono::high_resolution_clock::now();
-
-        std::chrono::duration<double, std::milli> compute_time = end - start;
-        std::cout << "Compute time on device: " << compute_time.count() << " ms" << std::endl;
+        );
     }
-    for (int i = 0; i < 10; i++)
+    gpu_queue.wait();
+
+    for (int i = 0; i < 5; i++)
     {
-        auto start = std::chrono::high_resolution_clock::now();
-        cpu_queue.parallel_for(
+        int *data = data_gpu[i];
+        gpu_queue.parallel_for(
             sycl::range<1>(N),
-            [=](sycl::id<1> idx)
+            sycl::reduction(result, sycl::plus<>()),
+            [=](sycl::id<1> idx, auto &sum)
             {
-                data[idx] = data[idx] * 2;
+                sum.combine(data[idx]);
             }
-        ).wait();
-        auto end = std::chrono::high_resolution_clock::now();
-
-        std::chrono::duration<double, std::milli> compute_time = end - start;
-        std::cout << "Compute time on host: " << compute_time.count() << " ms" << std::endl;
+        );
     }
+    gpu_queue.wait();
 
-    for (int i = 0; i < 10; i++)
-    {
-        auto start = std::chrono::high_resolution_clock::now();
-        cpu_queue.parallel_for(
-            sycl::range<1>(N),
-            [=](sycl::id<1> idx)
-            {
-                data_host2[idx] = data_host2[idx] * 2;
-            }
-        ).wait();
-        auto end = std::chrono::high_resolution_clock::now();
+    uint64_t expected_sum = ((N * (N - 1)) / 2) * 5;
 
-        std::chrono::duration<double, std::milli> compute_time = end - start;
-        std::cout << "Compute time on host2: " << compute_time.count() << " ms" << std::endl;
-    }
+    std::cout << "Computed sum: " << *result << ", Expected sum: " << expected_sum << ", Equal: " << (expected_sum == *result) << std::endl;
 
     return 0;
 }

@@ -16,13 +16,13 @@ private:
     std::vector<Column> materialized_columns;
     uint64_t nrows;
 public:
-    TransientTable(Table *base_table, sycl::queue &gpu_queue, sycl::queue &cpu_queue)
+    TransientTable(Table *base_table, sycl::queue &gpu_queue, sycl::queue &cpu_queue, memory_manager &gpu_allocator, memory_manager &cpu_allocator)
         : gpu_queue(gpu_queue), cpu_queue(cpu_queue), nrows(base_table->get_nrows())
     {
-        flags_gpu = sycl::malloc_device<bool>(nrows, gpu_queue);
+        flags_gpu = gpu_allocator.alloc<bool>(nrows);
         auto e1 = gpu_queue.fill<bool>(flags_gpu, true, nrows);
 
-        flags_host = sycl::malloc_host<bool>(nrows, gpu_queue);
+        flags_host = cpu_allocator.alloc<bool>(nrows);
         auto e2 = cpu_queue.fill<bool>(flags_host, true, nrows);
 
         const std::vector<Column> &base_columns = base_table->get_columns();
@@ -31,14 +31,31 @@ public:
         for (const Column &col : base_columns)
             current_columns.push_back(const_cast<Column *>(&col));
 
+        materialized_columns.reserve(50);
+
         e1.wait();
         e2.wait();
     }
 
-    ~TransientTable()
+    std::vector<Column *> get_columns() const { return current_columns; }
+    uint64_t get_nrows() const { return nrows; }
+
+    friend std::ostream &operator<<(std::ostream &out, const TransientTable &table)
     {
-        sycl::free(flags_gpu, gpu_queue);
-        sycl::free(flags_host, gpu_queue);
+        for (uint64_t i = 0; i < table.nrows; i++)
+        {
+            if (table.flags_host[i])
+            {
+                for (uint64_t j = 0; j < table.current_columns.size(); j++)
+                {
+                    const Column *col = table.current_columns[j];
+                    out << (col->get_is_aggregate_result() ? col->get_aggregate_value(i) : col->operator[](i)) << ((j < table.current_columns.size() - 1) ? " " : "");
+                }
+                out << "\n";
+            }
+        }
+
+        return out;
     }
 
     std::vector<sycl::event> apply_filter(
@@ -170,7 +187,7 @@ public:
     {
         std::vector<sycl::event> events;
         std::vector<Column *> new_columns;
-        new_columns.reserve(exprs.size());
+        new_columns.reserve(exprs.size() + 50);
 
         for (size_t i = 0; i < exprs.size(); i++)
         {
@@ -188,9 +205,10 @@ public:
                     cpu_queue,
                     gpu_allocator,
                     cpu_allocator,
-                    true
+                    true,
+                    false
                 );
-                Column &new_col = materialized_columns.back();
+                Column &new_col = materialized_columns[materialized_columns.size() - 1];
 
                 auto fill_events = new_col.fill_with_literal((int)expr.literal.value);
                 events.insert(events.end(), fill_events.begin(), fill_events.end());
@@ -212,9 +230,10 @@ public:
                     cpu_queue,
                     gpu_allocator,
                     cpu_allocator,
-                    true
+                    true,
+                    false
                 );
-                Column &new_col = materialized_columns.back();
+                Column &new_col = materialized_columns[materialized_columns.size() - 1];
 
                 if (expr.operands[0].exprType == ExprOption::COLUMN &&
                     expr.operands[1].exprType == ExprOption::COLUMN)
@@ -329,6 +348,90 @@ public:
         }
 
         current_columns = new_columns;
+        return events;
+    }
+
+    std::vector<sycl::event> apply_aggregate(
+        const AggType &agg,
+        const std::vector<long> &group,
+        memory_manager &gpu_allocator,
+        memory_manager &cpu_allocator,
+        const std::vector<sycl::event> &dependencies)
+    {
+        std::vector<sycl::event> events;
+
+        if (group.size() == 0)
+        {
+            materialized_columns.emplace_back(
+                1,
+                gpu_queue,
+                cpu_queue,
+                gpu_allocator,
+                cpu_allocator,
+                true,
+                true
+            );
+            Column &result_column = materialized_columns[materialized_columns.size() - 1];
+
+            const std::vector<Segment> &input_segments = current_columns[agg.operands[0]]->get_segments();
+
+            uint64_t *temp_results = gpu_allocator.alloc<uint64_t>(input_segments.size());
+
+            events.reserve(input_segments.size() + 1);
+
+            for (int i = 0; i < input_segments.size(); i++)
+            {
+                const Segment &input_segment = input_segments[i];
+                events.push_back(
+                    input_segment.aggregate_operator(
+                        temp_results + i,
+                        (input_segment.is_on_device() ? flags_gpu : flags_host) + i * SEGMENT_SIZE,
+                        agg.agg,
+                        dependencies
+                    )
+                );
+            }
+
+            uint64_t *final_result = result_column.get_segments()[0].get_aggregate_data(true);
+
+            auto e = gpu_queue.submit(
+                [&](sycl::handler &cgh)
+                {
+                    cgh.depends_on(events);
+                    cgh.parallel_for(
+                        sycl::range<1>(input_segments.size()),
+                        sycl::reduction(final_result, sycl::plus<>()),
+                        [=](sycl::id<1> idx, auto &sum)
+                        {
+                            sum.combine(temp_results[idx]);
+                        }
+                    );
+                }
+            );
+
+            events.clear();
+            events.push_back(e);
+
+            bool *new_gpu_flags = gpu_allocator.alloc<bool>(1),
+                *new_cpu_flags = cpu_allocator.alloc<bool>(1);
+
+            events.push_back(gpu_queue.fill<bool>(new_gpu_flags, true, 1));
+            new_cpu_flags[0] = true;
+
+            flags_gpu = new_gpu_flags;
+            flags_host = new_cpu_flags;
+
+            nrows = 1;
+
+            current_columns.clear();
+            current_columns.push_back(&result_column);
+        }
+        else
+        {
+            // TODO
+            std::cerr << "Aggregate operation: GROUP BY not yet supported" << std::endl;
+        }
+
         return events;
     }
 };

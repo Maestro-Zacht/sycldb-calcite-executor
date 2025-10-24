@@ -137,7 +137,7 @@ template <typename T, typename U>
 sycl::event aggregate_operation(
     U *result,
     const T a[],
-    bool flags[],
+    const bool flags[],
     int size,
     const std::string &op,
     sycl::queue &queue,
@@ -147,7 +147,7 @@ sycl::event aggregate_operation(
     auto start = std::chrono::high_resolution_clock::now();
     #endif
 
-    auto e1 = queue.memset(result, 0, sizeof(U));
+    // auto e1 = queue.memset(result, 0, sizeof(U));
 
     #if PRINT_AGGREGATE_DEBUG_INFO
     auto end = std::chrono::high_resolution_clock::now();
@@ -161,7 +161,7 @@ sycl::event aggregate_operation(
         [&](sycl::handler &cgh)
         {
             cgh.depends_on(dependencies);
-            cgh.depends_on(e1);
+            // cgh.depends_on(e1);
             cgh.parallel_for(
                 sycl::range<1>(size),
                 sycl::reduction(result, sycl::plus<>()),
