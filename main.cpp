@@ -619,7 +619,7 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
     std::vector<int> output_table(result.rels.size(), -1);
     std::vector<TransientTable> transient_tables;
     memory_manager gpu_allocator(gpu_queue, SIZE_TEMP_MEMORY_GPU, false);
-    memory_manager cpu_allocator(cpu_queue, SIZE_TEMP_MEMORY_CPU, true);
+    memory_manager cpu_allocator(gpu_queue, SIZE_TEMP_MEMORY_CPU, true);
     std::map<int, std::vector<sycl::event>> dependencies; // used to track dependencies between operations
 
     for (const RelNode &rel : result.rels)
@@ -767,6 +767,7 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
     cpu_queue.wait();
 
     auto end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::milli> duration = end - start;
 
     // std::cout << "All operations completed." << std::endl;
 
@@ -775,14 +776,16 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
 
     // std::cout << "end" << std::endl;
 
-    #if not PERFORMANCE_MEASUREMENT_ACTIVE
+    #if PERFORMANCE_MEASUREMENT_ACTIVE
+    if (!output_done)
+        perf_out << duration.count() << '\n';
+    #else
     const TransientTable &final_table = transient_tables[output_table[result.rels.size() - 1]];
 
     std::cout << "Final Result Table:\n" << final_table << "Number of rows: " << final_table.get_nrows() << std::endl;
     save_result(final_table, data_path);
     #endif
 
-    std::chrono::duration<double, std::milli> duration = end - start;
     return duration;
 }
 
@@ -880,17 +883,17 @@ int data_driven_operator_replacement(int argc, char **argv)
 
         for (int i = 0; i < PERFORMANCE_REPETITIONS; i++)
         {
-            // PlanResult result;
+            PlanResult result;
 
-            // auto start = std::chrono::high_resolution_clock::now();
-            // client.parse(result, sql);
-            // auto exec_time = execute_result(result, argv[1], all_tables, queue, perf_file);
-            // auto end = std::chrono::high_resolution_clock::now();
-            // std::chrono::duration<double, std::milli> total_time = end - start;
+            auto start = std::chrono::high_resolution_clock::now();
+            client.parse(result, sql);
+            auto exec_time = ddor_execute_result(result, argv[1], tables, gpu_queue, cpu_queue, perf_file);
+            auto end = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double, std::milli> total_time = end - start;
 
-            // std::cout << "Repetition " << i + 1 << "/" << PERFORMANCE_REPETITIONS
-            //     << " - " << exec_time.count() << " ms - "
-            //     << total_time.count() << " ms" << std::endl;
+            std::cout << "Repetition " << i + 1 << "/" << PERFORMANCE_REPETITIONS
+                << " - " << exec_time.count() << " ms - "
+                << total_time.count() << " ms" << std::endl;
         }
         perf_file.close();
         #else

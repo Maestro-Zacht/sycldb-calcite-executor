@@ -10,7 +10,7 @@
 #include "../kernels/types.hpp"
 #include "../operations/load.hpp"
 
-#define SEGMENT_SIZE (((uint64_t)1) << 20)
+#define SEGMENT_SIZE (((uint64_t)1) << 22)
 
 
 class Segment
