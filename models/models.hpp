@@ -575,6 +575,7 @@ public:
     std::tuple<bool *, int, int, std::vector<sycl::event>> build_keys_hash_table(int key_column, bool *flags, memory_manager &gpu_allocator, memory_manager &cpu_allocator, const std::vector<sycl::event> &dependencies) const
     {
         std::vector<sycl::event> events;
+        events.reserve(segments.size());
 
         int min_value = segments[0].get_min();
         int max_value = segments[0].get_max();
@@ -589,26 +590,18 @@ public:
 
         bool *ht = gpu_allocator.alloc<bool>(ht_len);
 
-        sycl::event prev_event = segments[0].build_keys_hash_table(
-            ht,
-            flags,
-            ht_len,
-            min_value,
-            dependencies
-        );
-
-        for (int i = 1; i < segments.size(); i++)
+        for (int i = 0; i < segments.size(); i++)
         {
-            prev_event = segments[i].build_keys_hash_table(
-                ht,
-                flags + i * SEGMENT_SIZE,
-                ht_len,
-                min_value,
-                { prev_event }
+            events.push_back(
+                segments[i].build_keys_hash_table(
+                    ht,
+                    flags + i * SEGMENT_SIZE,
+                    ht_len,
+                    min_value,
+                    dependencies
+                )
             );
         }
-
-        events.push_back(prev_event);
 
         return { ht, min_value, max_value, events };
     }
