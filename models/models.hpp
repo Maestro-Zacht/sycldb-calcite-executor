@@ -8,6 +8,7 @@
 #include "../gen-cpp/calciteserver_types.h"
 #include "../kernels/selection.hpp"
 #include "../kernels/types.hpp"
+#include "../kernels/join.hpp"
 #include "../operations/load.hpp"
 
 #define SEGMENT_SIZE (((uint64_t)1) << 22)
@@ -145,6 +146,8 @@ public:
     }
 
     bool is_on_device() const { return on_device; }
+    int get_min() const { return min; }
+    int get_max() const { return max; }
 
     const int *get_data(bool device) const
     {
@@ -431,6 +434,46 @@ public:
             dependencies
         );
     }
+
+    sycl::event build_keys_hash_table(
+        bool *ht,
+        const bool *flags,
+        int ht_len,
+        int ht_min_value,
+        const std::vector<sycl::event> &dependencies
+    ) const
+    {
+        return build_keys_ht(
+            on_device ? data_device : data_host,
+            flags,
+            nrows,
+            ht,
+            ht_len,
+            ht_min_value,
+            const_cast<sycl::queue &>(on_device ? gpu_queue : cpu_queue),
+            dependencies
+        );
+    }
+
+    sycl::event semi_join_operator(
+        bool *probe_flags,
+        int build_min_value,
+        int build_max_value,
+        const bool *build_ht,
+        const std::vector<sycl::event> &dependencies) const
+    {
+        return filter_join(
+            on_device ? data_device : data_host,
+            probe_flags,
+            nrows,
+            build_ht,
+            build_min_value,
+            build_max_value,
+            const_cast<sycl::queue &>(on_device ? gpu_queue : cpu_queue),
+            dependencies
+        );
+    }
+
 };
 
 
@@ -527,6 +570,73 @@ public:
         for (const auto &seg : segments)
             total_size += seg.get_data_size(gpu_only);
         return total_size;
+    }
+
+    std::tuple<bool *, int, int, std::vector<sycl::event>> build_keys_hash_table(int key_column, bool *flags, memory_manager &gpu_allocator, memory_manager &cpu_allocator, const std::vector<sycl::event> &dependencies) const
+    {
+        std::vector<sycl::event> events;
+
+        int min_value = segments[0].get_min();
+        int max_value = segments[0].get_max();
+
+        for (int i = 1; i < segments.size(); i++)
+        {
+            min_value = std::min(min_value, segments[i].get_min());
+            max_value = std::max(max_value, segments[i].get_max());
+        }
+
+        int ht_len = max_value - min_value + 1;
+
+        bool *ht = gpu_allocator.alloc<bool>(ht_len);
+
+        sycl::event prev_event = segments[0].build_keys_hash_table(
+            ht,
+            flags,
+            ht_len,
+            min_value,
+            dependencies
+        );
+
+        for (int i = 1; i < segments.size(); i++)
+        {
+            prev_event = segments[i].build_keys_hash_table(
+                ht,
+                flags + i * SEGMENT_SIZE,
+                ht_len,
+                min_value,
+                { prev_event }
+            );
+        }
+
+        events.push_back(prev_event);
+
+        return { ht, min_value, max_value, events };
+    }
+
+    std::vector<sycl::event> semi_join(
+        bool *probe_flags,
+        int build_min_value,
+        int build_max_value,
+        const bool *build_ht,
+        const std::vector<sycl::event> &dependencies)
+    {
+        std::vector<sycl::event> events;
+        events.reserve(segments.size());
+
+        for (int i = 0; i < segments.size(); i++)
+        {
+            events.push_back(
+                segments[i].semi_join_operator(
+                    probe_flags + i * SEGMENT_SIZE,
+                    build_min_value,
+                    build_max_value,
+                    build_ht,
+                    dependencies
+                )
+            );
+        }
+
+        return events;
     }
 };
 

@@ -15,8 +15,8 @@ inline T HASH(T X, T Y, T Z)
 
 template <typename T>
 sycl::event build_keys_ht(
-    T col[],
-    bool flags[],
+    const T col[],
+    const bool flags[],
     int col_len,
     bool ht[],
     T ht_len,
@@ -75,6 +75,42 @@ sycl::event build_key_vals_ht(
 
 template <typename T>
 sycl::event filter_join(
+    const T *probe_col,
+    bool *probe_col_flags,
+    int probe_col_len,
+    const bool *build_ht,
+    T build_min_value,
+    T build_max_value,
+    sycl::queue &queue,
+    const std::vector<sycl::event> &dependencies)
+{
+    int ht_len = build_max_value - build_min_value + 1;
+
+    return queue.submit(
+        [&](sycl::handler &cgh)
+        {
+            cgh.depends_on(dependencies);
+            cgh.parallel_for(
+                probe_col_len,
+                [=](sycl::id<1> idx)
+                {
+                    auto i = idx[0];
+                    if (
+                        probe_col_flags[i] &&
+                        probe_col[i] >= build_min_value &&
+                        probe_col[i] <= build_max_value
+                        )
+                        probe_col_flags[i] = build_ht[HASH(probe_col[i], ht_len, build_min_value)];
+                    else
+                        probe_col_flags[i] = false;
+                }
+            );
+        }
+    );
+}
+
+template <typename T>
+sycl::event filter_join(
     T build_col[],
     bool build_flags[],
     int build_col_len,
@@ -108,29 +144,16 @@ sycl::event filter_join(
         #endif
     }
 
-
-
-    auto e3 = queue.submit(
-        [&](sycl::handler &cgh)
-        {
-            cgh.depends_on(events);
-            cgh.parallel_for(
-                probe_col_len,
-                [=](sycl::id<1> idx)
-                {
-                    auto i = idx[0];
-                    if (
-                        probe_col_flags[i] &&
-                        probe_col[i] >= build_min_value &&
-                        probe_col[i] <= build_max_value
-                        )
-                        probe_col_flags[i] = ht[HASH(probe_col[i], ht_len, build_min_value)];
-                }
-            );
-        }
+    return filter_join(
+        probe_col,
+        probe_col_flags,
+        probe_col_len,
+        ht,
+        build_min_value,
+        build_max_value,
+        queue,
+        events
     );
-
-    return e3;
 }
 
 sycl::event full_join(

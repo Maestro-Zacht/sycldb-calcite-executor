@@ -755,6 +755,37 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
             #endif
             break;
         }
+        case RelNodeType::JOIN:
+        {
+            #if not PERFORMANCE_MEASUREMENT_ACTIVE
+            std::cout << "Starting Join operation." << std::endl;
+            auto start_join = std::chrono::high_resolution_clock::now();
+            #endif
+
+            int left_table_idx = output_table[rel.inputs[0]];
+            int right_table_idx = output_table[rel.inputs[1]];
+
+            std::vector<sycl::event> join_dependencies;
+            join_dependencies.insert(join_dependencies.end(), dependencies[rel.inputs[0]].begin(), dependencies[rel.inputs[0]].end());
+            join_dependencies.insert(join_dependencies.end(), dependencies[rel.inputs[1]].begin(), dependencies[rel.inputs[1]].end());
+
+            dependencies[id] = transient_tables[left_table_idx].apply_join(
+                transient_tables[right_table_idx],
+                rel,
+                gpu_allocator,
+                cpu_allocator,
+                join_dependencies
+            );
+            output_table[id] = left_table_idx;
+
+            #if not PERFORMANCE_MEASUREMENT_ACTIVE
+            auto end_join = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double, std::milli> join_time = end_join - start_join;
+            std::cout << "Join operation (" << join_time.count() << " ms)" << std::endl;
+            #endif
+
+            break;
+        }
         default:
             std::cerr << "RelNodeType " << rel.relOp << " not yet supported in DDOR." << std::endl;
             break;

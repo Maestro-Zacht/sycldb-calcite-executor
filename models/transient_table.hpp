@@ -14,7 +14,7 @@ private:
     sycl::queue gpu_queue, cpu_queue;
     std::vector<Column *> current_columns;
     std::vector<Column> materialized_columns;
-    uint64_t nrows;
+    uint64_t nrows, ncols;
 public:
     TransientTable(Table *base_table, sycl::queue &gpu_queue, sycl::queue &cpu_queue, memory_manager &gpu_allocator, memory_manager &cpu_allocator)
         : gpu_queue(gpu_queue), cpu_queue(cpu_queue), nrows(base_table->get_nrows())
@@ -27,7 +27,9 @@ public:
 
         const std::vector<Column> &base_columns = base_table->get_columns();
 
-        current_columns.reserve(base_columns.size());
+        ncols = base_columns.size();
+
+        current_columns.reserve(ncols);
         for (const Column &col : base_columns)
             current_columns.push_back(const_cast<Column *>(&col));
 
@@ -44,7 +46,7 @@ public:
     {
         for (uint64_t i = 0; i < table.nrows; i++)
         {
-            if (table.flags_host[i])
+            if (table.flags_host[i]) // TODO ensure flags are sync'd
             {
                 for (uint64_t j = 0; j < table.current_columns.size(); j++)
                 {
@@ -347,6 +349,7 @@ public:
             }
         }
 
+        ncols = new_columns.size();
         current_columns = new_columns;
         return events;
     }
@@ -422,6 +425,7 @@ public:
             flags_host = new_cpu_flags;
 
             nrows = 1;
+            ncols = 1;
 
             current_columns.clear();
             current_columns.push_back(&result_column);
@@ -431,6 +435,59 @@ public:
             // TODO
             std::cerr << "Aggregate operation: GROUP BY not yet supported" << std::endl;
         }
+
+        return events;
+    }
+
+    std::vector<sycl::event> apply_join(
+        const TransientTable &right_table,
+        const RelNode &rel,
+        memory_manager &gpu_allocator,
+        memory_manager &cpu_allocator,
+        const std::vector<sycl::event> &dependencies)
+    {
+        std::vector<sycl::event> events;
+        int left_column = rel.condition.operands[0].input,
+            right_column = rel.condition.operands[1].input - ncols;
+
+        if (left_column < 0 ||
+            left_column >= ncols ||
+            right_column < 0 ||
+            right_column >= right_table.ncols)
+        {
+            std::cerr << "Join operation: Invalid column indices in join condition." << std::endl;
+            return {};
+        }
+
+        if (rel.joinType == "semi")
+        {
+            auto ht_data = right_table.current_columns[right_column]->build_keys_hash_table(
+                right_column,
+                right_table.flags_gpu,
+                gpu_allocator,
+                cpu_allocator,
+                dependencies
+            );
+            bool *ht = std::get<0>(ht_data);
+            int build_min_value = std::get<1>(ht_data),
+                build_max_value = std::get<2>(ht_data);
+            std::vector<sycl::event> ht_events = std::get<3>(ht_data);
+
+            events = current_columns[left_column]->semi_join(
+                flags_gpu,
+                build_min_value,
+                build_max_value,
+                ht,
+                ht_events
+            );
+        }
+        else
+        {
+            // TODO
+            std::cerr << "Join operation: Only SEMI join type is currently supported." << std::endl;
+        }
+
+        ncols += right_table.ncols;
 
         return events;
     }
