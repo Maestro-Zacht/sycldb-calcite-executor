@@ -150,6 +150,18 @@ public:
     int get_max() const { return max; }
     uint64_t get_nrows() const { return nrows; }
 
+    void set_min(int value)
+    {
+        dirty_cache = true;
+        min = value;
+    }
+
+    void set_max(int value)
+    {
+        dirty_cache = true;
+        max = value;
+    }
+
     const int *get_data(bool device) const
     {
         if (device && !on_device)
@@ -737,6 +749,9 @@ public:
                     dependencies
                 )
             );
+
+            new_seg.set_min(build_min_value);
+            new_seg.set_max(build_max_value);
         }
 
         return { events, new_column };
