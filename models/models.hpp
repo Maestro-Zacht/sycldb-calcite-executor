@@ -148,6 +148,7 @@ public:
     bool is_on_device() const { return on_device; }
     int get_min() const { return min; }
     int get_max() const { return max; }
+    uint64_t get_nrows() const { return nrows; }
 
     const int *get_data(bool device) const
     {
@@ -160,6 +161,7 @@ public:
 
     int *get_data(bool device)
     {
+        dirty_cache = true;
         return const_cast<int *>(static_cast<const Segment &>(*this).get_data(device));
     }
 
@@ -474,6 +476,26 @@ public:
         );
     }
 
+    sycl::event build_key_vals_hash_ht(
+        int *ht,
+        const bool *flags,
+        int ht_len,
+        int ht_min_value,
+        const Segment &value_segment,
+        const std::vector<sycl::event> &dependencies) const
+    {
+        return build_key_vals_ht(
+            on_device ? data_device : data_host,
+            on_device ? value_segment.data_device : value_segment.data_host,
+            flags,
+            nrows,
+            ht,
+            ht_len,
+            ht_min_value,
+            const_cast<sycl::queue &>(on_device ? gpu_queue : cpu_queue),
+            dependencies
+        );
+    }
 };
 
 
@@ -572,7 +594,7 @@ public:
         return total_size;
     }
 
-    std::tuple<bool *, int, int, std::vector<sycl::event>> build_keys_hash_table(int key_column, bool *flags, memory_manager &gpu_allocator, memory_manager &cpu_allocator, const std::vector<sycl::event> &dependencies) const
+    std::tuple<bool *, int, int, std::vector<sycl::event>> build_keys_hash_table(bool *flags, memory_manager &gpu_allocator, memory_manager &cpu_allocator, const std::vector<sycl::event> &dependencies) const
     {
         std::vector<sycl::event> events;
         events.reserve(segments.size());
@@ -630,6 +652,94 @@ public:
         }
 
         return events;
+    }
+
+    std::tuple<int *, int, int, std::vector<sycl::event>> build_key_vals_hash_table(
+        const Column *vals_column,
+        bool *flags,
+        memory_manager &gpu_allocator,
+        memory_manager &cpu_allocator,
+        const std::vector<sycl::event> &dependencies) const
+    {
+        std::vector<sycl::event> events;
+        events.reserve(segments.size());
+
+        int min_value = segments[0].get_min();
+        int max_value = segments[0].get_max();
+
+        for (int i = 1; i < segments.size(); i++)
+        {
+            min_value = std::min(min_value, segments[i].get_min());
+            max_value = std::max(max_value, segments[i].get_max());
+        }
+
+        int ht_len = max_value - min_value + 1;
+
+        int *ht = gpu_allocator.alloc<int>(ht_len * 2);
+
+        for (int i = 0; i < segments.size(); i++)
+        {
+            events.push_back(
+                segments[i].build_key_vals_hash_ht(
+                    ht,
+                    flags + i * SEGMENT_SIZE,
+                    ht_len,
+                    min_value,
+                    vals_column->segments[i],
+                    dependencies
+                )
+            );
+        }
+
+        return { ht, min_value, max_value, events };
+    }
+
+    std::pair<std::vector<sycl::event>, Column> full_join_operation(
+        bool *probe_flags,
+        int build_min_value,
+        int build_max_value,
+        const int *build_ht,
+        memory_manager &gpu_allocator,
+        memory_manager &cpu_allocator,
+        sycl::queue &gpu_queue,
+        sycl::queue &cpu_queue,
+        const std::vector<sycl::event> &dependencies) const
+    {
+        std::vector<sycl::event> events;
+        uint64_t num_rows = (segments.size() - 1) * SEGMENT_SIZE + segments.back().get_nrows();
+        Column new_column(
+            num_rows,
+            gpu_queue,
+            cpu_queue,
+            gpu_allocator,
+            cpu_allocator,
+            true,
+            false
+        );
+
+        events.reserve(segments.size());
+
+        for (int i = 0; i < segments.size(); i++)
+        {
+            const Segment &seg = segments[i];
+            Segment &new_seg = new_column.segments[i];
+
+            events.push_back(
+                full_join(
+                    seg.get_data(true),
+                    new_seg.get_data(true),
+                    probe_flags + i * SEGMENT_SIZE,
+                    seg.get_nrows(),
+                    build_ht,
+                    build_min_value,
+                    build_max_value,
+                    gpu_queue,
+                    dependencies
+                )
+            );
+        }
+
+        return { events, new_column };
     }
 };
 

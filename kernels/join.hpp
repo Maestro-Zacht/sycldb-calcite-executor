@@ -42,7 +42,7 @@ sycl::event build_keys_ht(
 sycl::event build_key_vals_ht(
     int col[],
     int agg_col[],
-    bool flags[],
+    const bool flags[],
     int col_len,
     int ht[],
     int ht_len,
@@ -157,6 +157,49 @@ sycl::event filter_join(
 }
 
 sycl::event full_join(
+    const int *probe_col,
+    int *probe_val_out,
+    bool *probe_flags,
+    int probe_col_len,
+    const int *ht,
+    int ht_min,
+    int ht_max,
+    sycl::queue &queue,
+    const std::vector<sycl::event> &dependencies
+)
+{
+    int ht_len = ht_max - ht_min + 1;
+
+    return queue.submit(
+        [&](sycl::handler &cgh)
+        {
+            cgh.depends_on(dependencies);
+            cgh.parallel_for(
+                sycl::range<1>{(unsigned long)probe_col_len},
+                [=](sycl::id<1> idx)
+                {
+                    auto i = idx[0];
+                    if (probe_flags[i])
+                    {
+                        int hash = HASH(probe_col[i], ht_len, ht_min);
+                        if (probe_col[i] >= ht_min &&
+                            probe_col[i] <= ht_max &&
+                            ht[hash << 1] == 1)
+                        {
+                            probe_val_out[i] = ht[(hash << 1) + 1]; // save the value to group by on
+                        }
+                        else
+                        {
+                            probe_flags[i] = false; // mark as not selected
+                        }
+                    }
+                }
+            );
+        }
+    );
+}
+
+sycl::event full_join(
     TableData<int> &probe_table,
     TableData<int> &build_table,
     int probe_col_index,
@@ -223,29 +266,16 @@ sycl::event full_join(
     start = std::chrono::high_resolution_clock::now();
     #endif
 
-    auto e3 = queue.submit(
-        [&](sycl::handler &cgh)
-        {
-            cgh.depends_on(events);
-            cgh.parallel_for(
-                sycl::range<1>{(unsigned long)probe_table.col_len},
-                [=](sycl::id<1> idx)
-                {
-                    auto i = idx[0];
-                    if (probe_flags[i])
-                    {
-                        int hash = HASH(probe_content[i], ht_len,
-                            build_col_min);
-                        if (probe_content[i] >= build_col_min &&
-                            probe_content[i] <= build_col_max &&
-                            ht[hash << 1] == 1)
-                            probe_content[i] = ht[(hash << 1) + 1]; // replace the probe column value with the value to group by on
-                        else
-                            probe_flags[i] = false; // mark as not selected
-                    }
-                }
-            );
-        }
+    auto e3 = full_join(
+        probe_content,
+        probe_content,
+        probe_flags,
+        probe_table.col_len,
+        ht,
+        build_col_min,
+        build_col_max,
+        queue,
+        events
     );
 
     #if PRINT_JOIN_DEBUG_INFO

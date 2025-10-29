@@ -653,7 +653,10 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
             return std::chrono::duration<double, std::milli>::zero();
         }
 
-        transient_tables.emplace_back(table_ptr, gpu_queue, cpu_queue, gpu_allocator, cpu_allocator);
+        TransientTable &t = transient_tables.emplace_back(table_ptr, gpu_queue, cpu_queue, gpu_allocator, cpu_allocator);
+
+        if (exec_info.group_by_columns.find(rel.tables[1]) != exec_info.group_by_columns.end())
+            t.set_group_by_column(exec_info.group_by_columns[rel.tables[1]]);
 
         output_table[rel.id] = transient_tables.size() - 1;
     }

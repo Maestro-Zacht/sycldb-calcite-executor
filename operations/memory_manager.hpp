@@ -44,6 +44,8 @@ T *memory_manager::alloc(uint64_t count)
 
     if (allocated + bytes > size)
     {
+        std::cerr << "Memory manager out of memory: requested " << bytes << " bytes, "
+            << (size - allocated) << " bytes available." << std::endl;
         throw std::bad_alloc();
     }
 

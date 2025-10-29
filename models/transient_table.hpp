@@ -14,10 +14,11 @@ private:
     sycl::queue gpu_queue, cpu_queue;
     std::vector<Column *> current_columns;
     std::vector<Column> materialized_columns;
-    uint64_t nrows, ncols;
+    uint64_t nrows;
+    Column *group_by_column;
 public:
     TransientTable(Table *base_table, sycl::queue &gpu_queue, sycl::queue &cpu_queue, memory_manager &gpu_allocator, memory_manager &cpu_allocator)
-        : gpu_queue(gpu_queue), cpu_queue(cpu_queue), nrows(base_table->get_nrows())
+        : gpu_queue(gpu_queue), cpu_queue(cpu_queue), nrows(base_table->get_nrows()), group_by_column(nullptr)
     {
         flags_gpu = gpu_allocator.alloc<bool>(nrows);
         auto e1 = gpu_queue.fill<bool>(flags_gpu, true, nrows);
@@ -27,9 +28,7 @@ public:
 
         const std::vector<Column> &base_columns = base_table->get_columns();
 
-        ncols = base_columns.size();
-
-        current_columns.reserve(ncols);
+        current_columns.reserve(base_columns.size() + 100);
         for (const Column &col : base_columns)
             current_columns.push_back(const_cast<Column *>(&col));
 
@@ -41,6 +40,9 @@ public:
 
     std::vector<Column *> get_columns() const { return current_columns; }
     uint64_t get_nrows() const { return nrows; }
+    const Column *get_group_by_column() const { return group_by_column; }
+
+    void set_group_by_column(uint64_t col) { group_by_column = current_columns[col]; }
 
     friend std::ostream &operator<<(std::ostream &out, const TransientTable &table)
     {
@@ -201,7 +203,7 @@ public:
                 break;
             case ExprOption::LITERAL:
             {
-                materialized_columns.emplace_back(
+                Column &new_col = materialized_columns.emplace_back(
                     nrows,
                     gpu_queue,
                     cpu_queue,
@@ -210,7 +212,6 @@ public:
                     true,
                     false
                 );
-                Column &new_col = materialized_columns[materialized_columns.size() - 1];
 
                 auto fill_events = new_col.fill_with_literal((int)expr.literal.value);
                 events.insert(events.end(), fill_events.begin(), fill_events.end());
@@ -226,7 +227,7 @@ public:
                     return {};
                 }
 
-                materialized_columns.emplace_back(
+                Column &new_col = materialized_columns.emplace_back(
                     nrows,
                     gpu_queue,
                     cpu_queue,
@@ -235,7 +236,6 @@ public:
                     true,
                     false
                 );
-                Column &new_col = materialized_columns[materialized_columns.size() - 1];
 
                 if (expr.operands[0].exprType == ExprOption::COLUMN &&
                     expr.operands[1].exprType == ExprOption::COLUMN)
@@ -349,7 +349,6 @@ public:
             }
         }
 
-        ncols = new_columns.size();
         current_columns = new_columns;
         return events;
     }
@@ -365,7 +364,7 @@ public:
 
         if (group.size() == 0)
         {
-            materialized_columns.emplace_back(
+            Column &result_column = materialized_columns.emplace_back(
                 1,
                 gpu_queue,
                 cpu_queue,
@@ -374,7 +373,6 @@ public:
                 true,
                 true
             );
-            Column &result_column = materialized_columns[materialized_columns.size() - 1];
 
             const std::vector<Segment> &input_segments = current_columns[agg.operands[0]]->get_segments();
 
@@ -425,7 +423,6 @@ public:
             flags_host = new_cpu_flags;
 
             nrows = 1;
-            ncols = 1;
 
             current_columns.clear();
             current_columns.push_back(&result_column);
@@ -448,12 +445,12 @@ public:
     {
         std::vector<sycl::event> events;
         int left_column = rel.condition.operands[0].input,
-            right_column = rel.condition.operands[1].input - ncols;
+            right_column = rel.condition.operands[1].input - current_columns.size();
 
         if (left_column < 0 ||
-            left_column >= ncols ||
+            left_column >= current_columns.size() ||
             right_column < 0 ||
-            right_column >= right_table.ncols)
+            right_column >= right_table.current_columns.size())
         {
             std::cerr << "Join operation: Invalid column indices in join condition." << std::endl;
             return {};
@@ -462,7 +459,6 @@ public:
         if (rel.joinType == "semi")
         {
             auto ht_data = right_table.current_columns[right_column]->build_keys_hash_table(
-                right_column,
                 right_table.flags_gpu,
                 gpu_allocator,
                 cpu_allocator,
@@ -480,14 +476,46 @@ public:
                 ht,
                 ht_events
             );
+
+            for (int i = 0; i < right_table.current_columns.size(); i++)
+                current_columns.push_back(nullptr);
         }
         else
         {
-            // TODO
-            std::cerr << "Join operation: Only SEMI join type is currently supported." << std::endl;
-        }
+            auto ht_data = right_table.current_columns[right_column]->build_key_vals_hash_table(
+                right_table.group_by_column,
+                right_table.flags_gpu,
+                gpu_allocator,
+                cpu_allocator,
+                dependencies
+            );
+            int *ht = std::get<0>(ht_data);
+            int build_min_value = std::get<1>(ht_data),
+                build_max_value = std::get<2>(ht_data);
+            std::vector<sycl::event> ht_events = std::get<3>(ht_data);
 
-        ncols += right_table.ncols;
+            auto join_data = current_columns[left_column]->full_join_operation(
+                flags_gpu,
+                build_min_value,
+                build_max_value,
+                ht,
+                gpu_allocator,
+                cpu_allocator,
+                gpu_queue,
+                cpu_queue,
+                ht_events
+            );
+
+            events = join_data.first;
+
+            for (int i = 0; i < right_table.current_columns.size(); i++)
+                current_columns.push_back(nullptr);
+
+            materialized_columns.push_back(std::move(join_data.second));
+            Column *new_col = &materialized_columns[materialized_columns.size() - 1];
+
+            current_columns[rel.condition.operands[1].input] = new_col;
+        }
 
         return events;
     }
