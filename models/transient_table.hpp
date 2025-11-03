@@ -199,10 +199,13 @@ public:
             switch (expr.exprType)
             {
             case ExprOption::COLUMN:
+            {
                 new_columns.push_back(current_columns[expr.input]);
                 break;
+            }
             case ExprOption::LITERAL:
             {
+                int literal_value = (int)expr.literal.value;
                 Column &new_col = materialized_columns.emplace_back(
                     nrows,
                     gpu_queue,
@@ -213,7 +216,7 @@ public:
                     false
                 );
 
-                auto fill_events = new_col.fill_with_literal((int)expr.literal.value);
+                auto fill_events = new_col.fill_with_literal(literal_value);
                 events.insert(events.end(), fill_events.begin(), fill_events.end());
 
                 new_columns.push_back(&new_col);
@@ -429,8 +432,111 @@ public:
         }
         else
         {
-            // TODO
-            std::cerr << "Aggregate operation: GROUP BY not yet supported" << std::endl;
+            uint64_t prod_ranges = 1;
+            int *min = cpu_allocator.alloc<int>(group.size()),
+                *max = cpu_allocator.alloc<int>(group.size());
+
+            for (int i = 0; i < group.size(); i++)
+            {
+                auto min_max = current_columns[group[i]]->get_min_max();
+                min[i] = min_max.first;
+                max[i] = min_max.second;
+                prod_ranges *= max[i] - min[i] + 1;
+            }
+
+            uint64_t *aggregate_result = gpu_allocator.alloc<uint64_t>(prod_ranges);
+            bool *new_gpu_flags = gpu_allocator.alloc<bool>(prod_ranges),
+                *new_cpu_flags = cpu_allocator.alloc<bool>(prod_ranges);
+            unsigned *temp_flags = gpu_allocator.alloc<unsigned>(prod_ranges);
+
+            int **results = gpu_allocator.alloc<int *>(group.size());
+            const int **contents = gpu_allocator.alloc<const int *>(group.size());
+
+            for (int i = 0; i < group.size(); i++)
+                results[i] = gpu_allocator.alloc<int>(prod_ranges);
+
+            int num_segments = current_columns[agg.operands[0]]->get_segments().size();
+
+            events.reserve(num_segments);
+
+            for (int i = 0; i < num_segments; i++)
+            {
+                for (int j = 0; j < group.size(); j++)
+                {
+                    const Segment &segment = current_columns[group[j]]->get_segments()[i];
+                    contents[j] = segment.get_data(true);
+                }
+                const Segment &agg_segment = current_columns[agg.operands[0]]->get_segments()[i];
+
+                auto e = group_by_aggregate(
+                    contents,
+                    agg_segment.get_data(true),
+                    max,
+                    min,
+                    flags_gpu + i * SEGMENT_SIZE,
+                    agg_segment.get_nrows(),
+                    group.size(),
+                    results,
+                    aggregate_result,
+                    temp_flags,
+                    prod_ranges,
+                    agg.agg,
+                    gpu_queue,
+                    dependencies
+                );
+                events.push_back(e);
+            }
+
+            auto e1 = gpu_queue.submit(
+                [&](sycl::handler &cgh)
+                {
+                    cgh.depends_on(events);
+                    cgh.parallel_for(
+                        prod_ranges,
+                        [=](sycl::id<1> idx)
+                        {
+                            new_gpu_flags[idx] = temp_flags[idx] != 0;
+                        }
+                    );
+                }
+            );
+
+            auto e2 = gpu_queue.memcpy(
+                new_cpu_flags,
+                new_gpu_flags,
+                sizeof(bool) * prod_ranges,
+                e1
+            );
+
+            events.clear();
+            events.push_back(e2);
+
+            current_columns.clear();
+
+            for (int i = 0; i < group.size(); i++)
+            {
+                Column &new_col = materialized_columns.emplace_back(
+                    results[i],
+                    true,
+                    gpu_queue,
+                    cpu_queue,
+                    gpu_allocator,
+                    cpu_allocator,
+                    prod_ranges
+                );
+                current_columns.push_back(&new_col);
+            }
+
+            Column &agg_col = materialized_columns.emplace_back(
+                aggregate_result,
+                true,
+                gpu_queue,
+                cpu_queue,
+                gpu_allocator,
+                cpu_allocator,
+                prod_ranges
+            );
+            current_columns.push_back(&agg_col);
         }
 
         return events;
@@ -512,9 +618,8 @@ public:
                 current_columns.push_back(nullptr);
 
             materialized_columns.push_back(std::move(join_data.second));
-            Column *new_col = &materialized_columns[materialized_columns.size() - 1];
 
-            current_columns[rel.condition.operands[1].input] = new_col;
+            current_columns[rel.condition.operands[1].input] = &materialized_columns[materialized_columns.size() - 1];
         }
 
         return events;

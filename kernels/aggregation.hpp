@@ -183,6 +183,67 @@ sycl::event aggregate_operation(
     return e2;
 }
 
+sycl::event group_by_aggregate(
+    const int **contents,
+    const int *agg_column,
+    const int *max,
+    const int *min,
+    const bool *flags,
+    int col_len,
+    int col_num,
+    int **results,
+    uint64_t *agg_result,
+    unsigned *result_flags,
+    uint64_t prod_ranges,
+    const std::string &agg_op,
+    sycl::queue &gpu_queue,
+    const std::vector<sycl::event> &dependencies)
+{
+    return gpu_queue.submit(
+        [&](sycl::handler &cgh)
+        {
+            cgh.depends_on(dependencies);
+            cgh.parallel_for(
+                col_len,
+                [=](sycl::id<1> idx)
+                {
+                    auto i = idx[0];
+                    if (flags[i])
+                    {
+                        int hash = 0, mult = 1;
+                        for (int j = 0; j < col_num; j++)
+                        {
+                            hash += (contents[j][i] - min[j]) * mult;
+                            mult *= max[j] - min[j] + 1;
+                        }
+                        hash %= prod_ranges;
+
+                        sycl::atomic_ref<
+                            unsigned,
+                            sycl::memory_order::relaxed,
+                            sycl::memory_scope::device,
+                            sycl::access::address_space::global_space
+                        > flag_obj(result_flags[hash]);
+                        if (flag_obj.exchange(1) == 0)
+                        {
+                            for (int j = 0; j < col_num; j++)
+                                results[j][hash] = contents[j][i];
+                        }
+
+                        sycl::atomic_ref<
+                            uint64_t,
+                            sycl::memory_order::relaxed,
+                            sycl::memory_scope::device,
+                            sycl::access::address_space::global_space
+                        > sum_obj(agg_result[hash]);
+                        sum_obj.fetch_add(agg_column[i]);
+                    }
+                }
+            );
+        }
+    );
+}
+
 std::tuple<
     int **,
     unsigned long long,

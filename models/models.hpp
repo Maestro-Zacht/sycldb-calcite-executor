@@ -116,6 +116,78 @@ public:
         max = 0;
     }
 
+    Segment(
+        uint64_t *init_data,
+        bool on_device,
+        sycl::queue &gpu_queue,
+        sycl::queue &cpu_queue,
+        memory_manager &gpu_allocator,
+        memory_manager &cpu_allocator,
+        uint64_t count = SEGMENT_SIZE
+    )
+        :
+        nrows(count),
+        gpu_queue(gpu_queue),
+        cpu_queue(cpu_queue),
+        on_device(on_device),
+        is_aggregate_result(true),
+        is_materialized(true),
+        dirty_cache(true)
+    {
+        if (count > SEGMENT_SIZE)
+            throw std::bad_alloc();
+
+        if (on_device)
+        {
+            data_device = reinterpret_cast<int *>(init_data);
+            data_host = cpu_allocator.alloc<int>(count);
+        }
+        else
+        {
+            data_host = reinterpret_cast<int *>(init_data);
+            data_device = gpu_allocator.alloc<int>(count);
+        }
+
+        min = 0;
+        max = 0;
+    }
+
+    Segment(
+        int *init_data,
+        bool on_device,
+        sycl::queue &gpu_queue,
+        sycl::queue &cpu_queue,
+        memory_manager &gpu_allocator,
+        memory_manager &cpu_allocator,
+        uint64_t count = SEGMENT_SIZE
+    )
+        :
+        nrows(count),
+        gpu_queue(gpu_queue),
+        cpu_queue(cpu_queue),
+        on_device(on_device),
+        is_aggregate_result(false),
+        is_materialized(true),
+        dirty_cache(true)
+    {
+        if (count > SEGMENT_SIZE)
+            throw std::bad_alloc();
+
+        if (on_device)
+        {
+            data_device = init_data;
+            data_host = cpu_allocator.alloc<int>(count);
+        }
+        else
+        {
+            data_host = init_data;
+            data_device = gpu_allocator.alloc<int>(count);
+        }
+
+        min = 0;
+        max = 0;
+    }
+
     ~Segment()
     {
         if (!is_materialized)
@@ -559,9 +631,100 @@ public:
             segments.emplace_back(gpu_queue, cpu_queue, cpu_allocator, gpu_allocator, on_device, is_aggregate_result, remainder);
     }
 
+    Column(
+        uint64_t *init_data,
+        bool on_device,
+        sycl::queue &gpu_queue,
+        sycl::queue &cpu_queue,
+        memory_manager &gpu_allocator,
+        memory_manager &cpu_allocator,
+        uint64_t nrows)
+        : is_aggregate_result(true)
+    {
+        uint64_t full_segments = nrows / SEGMENT_SIZE;
+        uint64_t remainder = nrows % SEGMENT_SIZE;
+
+        segments.reserve(full_segments + (remainder > 0 ? 1 : 0));
+
+        for (uint64_t i = 0; i < full_segments; i++)
+            segments.emplace_back(
+                init_data + i * SEGMENT_SIZE,
+                on_device,
+                gpu_queue,
+                cpu_queue,
+                gpu_allocator,
+                cpu_allocator
+            );
+
+        if (remainder > 0)
+            segments.emplace_back(
+                init_data + full_segments * SEGMENT_SIZE,
+                on_device,
+                gpu_queue,
+                cpu_queue,
+                gpu_allocator,
+                cpu_allocator,
+                remainder
+            );
+    }
+
+    Column(
+        int *init_data,
+        bool on_device,
+        sycl::queue &gpu_queue,
+        sycl::queue &cpu_queue,
+        memory_manager &gpu_allocator,
+        memory_manager &cpu_allocator,
+        uint64_t nrows)
+        : is_aggregate_result(false)
+    {
+        uint64_t full_segments = nrows / SEGMENT_SIZE;
+        uint64_t remainder = nrows % SEGMENT_SIZE;
+
+        segments.reserve(full_segments + (remainder > 0 ? 1 : 0));
+
+        for (uint64_t i = 0; i < full_segments; i++)
+            segments.emplace_back(
+                init_data + i * SEGMENT_SIZE,
+                on_device,
+                gpu_queue,
+                cpu_queue,
+                gpu_allocator,
+                cpu_allocator
+            );
+
+        if (remainder > 0)
+            segments.emplace_back(
+                init_data + full_segments * SEGMENT_SIZE,
+                on_device,
+                gpu_queue,
+                cpu_queue,
+                gpu_allocator,
+                cpu_allocator,
+                remainder
+            );
+    }
+
     const std::vector<Segment> &get_segments() const { return segments; }
     std::vector<Segment> &get_segments() { return segments; }
     bool get_is_aggregate_result() const { return is_aggregate_result; }
+
+    std::pair<int, int> get_min_max() const
+    {
+        if (is_aggregate_result)
+            throw std::runtime_error("can't get min/max of aggregate result column");
+
+        int overall_min = segments[0].get_min();
+        int overall_max = segments[0].get_max();
+
+        for (int i = 1; i < segments.size(); i++)
+        {
+            overall_min = std::min(overall_min, segments[i].get_min());
+            overall_max = std::max(overall_max, segments[i].get_max());
+        }
+
+        return { overall_min, overall_max };
+    }
 
     const int &operator[](uint64_t index) const
     {
@@ -611,14 +774,9 @@ public:
         std::vector<sycl::event> events;
         events.reserve(segments.size());
 
-        int min_value = segments[0].get_min();
-        int max_value = segments[0].get_max();
-
-        for (int i = 1; i < segments.size(); i++)
-        {
-            min_value = std::min(min_value, segments[i].get_min());
-            max_value = std::max(max_value, segments[i].get_max());
-        }
+        auto min_max = get_min_max();
+        int min_value = min_max.first;
+        int max_value = min_max.second;
 
         int ht_len = max_value - min_value + 1;
 

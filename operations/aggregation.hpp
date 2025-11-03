@@ -162,4 +162,4 @@ std::vector<sycl::event> parse_aggregate(
     }
 
     return events;
-    }
+}

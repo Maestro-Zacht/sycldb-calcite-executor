@@ -972,47 +972,66 @@ int test()
         sycl::ext::codeplay::experimental::property::queue::enable_fusion {}
         #endif
     };
+    sycl::ext::codeplay::experimental::fusion_wrapper fw{ gpu_queue };
 
-    uint64_t N = ((uint64_t)1 << 23);
-    const int num = 160;
+    uint64_t N = ((uint64_t)1 << 30);
 
-    int *data_gpu[num];
-    for (int i = 0; i < num; i++)
-        data_gpu[i] = sycl::malloc_shared<int>(N, gpu_queue);
+    int *data_gpu = sycl::malloc_shared<int>(N, gpu_queue);
 
     uint64_t *result = sycl::malloc_shared<uint64_t>(1, gpu_queue);
     gpu_queue.memset(result, 0, sizeof(uint64_t));
 
-    for (int i = 0; i < 5; i++)
-    {
-        int *data = data_gpu[i];
-        gpu_queue.parallel_for(
-            sycl::range<1>(N),
-            [=](sycl::id<1> idx)
-            {
-                data[idx] = idx[0];
-            }
-        );
-    }
+    fw.start_fusion();
+
+    auto e = gpu_queue.parallel_for(
+        sycl::range<1>(N),
+        [=](sycl::id<1> idx)
+        {
+            data_gpu[idx] = idx[0] + 1;
+        }
+    );
+
+    auto e2 = gpu_queue.submit(
+        [&](sycl::handler &cgh)
+        {
+            cgh.depends_on(e);
+            cgh.parallel_for(
+                sycl::range<1>(N),
+                [=](sycl::id<1> idx)
+                {
+                    data_gpu[idx] -= 1;
+                }
+            );
+        });
+
+    gpu_queue.submit(
+        [&](sycl::handler &cgh)
+        {
+            cgh.depends_on(e2);
+            cgh.parallel_for(
+                sycl::range<1>(N),
+                [=](sycl::id<1> idx)
+                {
+                    sycl::atomic_ref<uint64_t,
+                    sycl::memory_order::relaxed,
+                    sycl::memory_scope::device,
+                    sycl::access::address_space::global_space> atomic_result(*result);
+            atomic_result.fetch_add(data_gpu[idx]);
+                }
+            );
+        }
+    );
+
+    fw.complete_fusion(sycl::ext::codeplay::experimental::property::no_barriers {});
+
     gpu_queue.wait();
 
-    for (int i = 0; i < 5; i++)
-    {
-        int *data = data_gpu[i];
-        gpu_queue.parallel_for(
-            sycl::range<1>(N),
-            sycl::reduction(result, sycl::plus<>()),
-            [=](sycl::id<1> idx, auto &sum)
-            {
-                sum.combine(data[idx]);
-            }
-        );
-    }
-    gpu_queue.wait();
-
-    uint64_t expected_sum = ((N * (N - 1)) / 2) * 5;
+    uint64_t expected_sum = ((N * (N - 1)) / 2);
 
     std::cout << "Computed sum: " << *result << ", Expected sum: " << expected_sum << ", Equal: " << (expected_sum == *result) << std::endl;
+
+    sycl::free(data_gpu, gpu_queue);
+    sycl::free(result, gpu_queue);
 
     return 0;
 }
