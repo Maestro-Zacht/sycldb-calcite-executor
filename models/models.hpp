@@ -868,6 +868,8 @@ public:
         bool *probe_flags,
         int build_min_value,
         int build_max_value,
+        int group_by_column_min,
+        int group_by_column_max,
         const int *build_ht,
         memory_manager &gpu_allocator,
         memory_manager &cpu_allocator,
@@ -908,8 +910,8 @@ public:
                 )
             );
 
-            new_seg.set_min(build_min_value);
-            new_seg.set_max(build_max_value);
+            new_seg.set_min(group_by_column_min);
+            new_seg.set_max(group_by_column_max);
         }
 
         return { events, new_column };

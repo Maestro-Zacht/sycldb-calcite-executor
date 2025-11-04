@@ -16,9 +16,10 @@ private:
     std::vector<Column> materialized_columns;
     uint64_t nrows;
     Column *group_by_column;
+    uint64_t group_by_column_index;
 public:
     TransientTable(Table *base_table, sycl::queue &gpu_queue, sycl::queue &cpu_queue, memory_manager &gpu_allocator, memory_manager &cpu_allocator)
-        : gpu_queue(gpu_queue), cpu_queue(cpu_queue), nrows(base_table->get_nrows()), group_by_column(nullptr)
+        : gpu_queue(gpu_queue), cpu_queue(cpu_queue), nrows(base_table->get_nrows()), group_by_column(nullptr), group_by_column_index(0)
     {
         flags_gpu = gpu_allocator.alloc<bool>(nrows);
         auto e1 = gpu_queue.fill<bool>(flags_gpu, true, nrows);
@@ -42,7 +43,11 @@ public:
     uint64_t get_nrows() const { return nrows; }
     const Column *get_group_by_column() const { return group_by_column; }
 
-    void set_group_by_column(uint64_t col) { group_by_column = current_columns[col]; }
+    void set_group_by_column(uint64_t col)
+    {
+        group_by_column = current_columns[col];
+        group_by_column_index = col;
+    }
 
     friend std::ostream &operator<<(std::ostream &out, const TransientTable &table)
     {
@@ -201,6 +206,8 @@ public:
             case ExprOption::COLUMN:
             {
                 new_columns.push_back(current_columns[expr.input]);
+                if (expr.input == group_by_column_index)
+                    group_by_column_index = i;
                 break;
             }
             case ExprOption::LITERAL:
@@ -449,8 +456,8 @@ public:
                 *new_cpu_flags = cpu_allocator.alloc<bool>(prod_ranges);
             unsigned *temp_flags = gpu_allocator.alloc<unsigned>(prod_ranges);
 
-            int **results = gpu_allocator.alloc<int *>(group.size());
-            const int **contents = gpu_allocator.alloc<const int *>(group.size());
+            int **results = cpu_allocator.alloc<int *>(group.size());
+            const int **contents = cpu_allocator.alloc<const int *>(group.size());
 
             for (int i = 0; i < group.size(); i++)
                 results[i] = gpu_allocator.alloc<int>(prod_ranges);
@@ -537,6 +544,11 @@ public:
                 prod_ranges
             );
             current_columns.push_back(&agg_col);
+
+            flags_gpu = new_gpu_flags;
+            flags_host = new_cpu_flags;
+
+            nrows = prod_ranges;
         }
 
         return events;
@@ -558,8 +570,8 @@ public:
             right_column < 0 ||
             right_column >= right_table.current_columns.size())
         {
-            std::cerr << "Join operation: Invalid column indices in join condition." << std::endl;
-            return {};
+            std::cerr << "Join operation: Invalid column indices in join condition: " << left_column << "/" << current_columns.size() << " and " << right_column << "/" << right_table.current_columns.size() << " ( " << rel.condition.operands[1].input << " )" << std::endl;
+            throw std::invalid_argument("Invalid column indices in join condition.");
         }
 
         if (rel.joinType == "semi")
@@ -599,11 +611,14 @@ public:
             int build_min_value = std::get<1>(ht_data),
                 build_max_value = std::get<2>(ht_data);
             std::vector<sycl::event> ht_events = std::get<3>(ht_data);
+            auto min_max_gb = right_table.group_by_column->get_min_max();
 
             auto join_data = current_columns[left_column]->full_join_operation(
                 flags_gpu,
                 build_min_value,
                 build_max_value,
+                min_max_gb.first,
+                min_max_gb.second,
                 ht,
                 gpu_allocator,
                 cpu_allocator,
@@ -614,12 +629,14 @@ public:
 
             events = join_data.first;
 
+            uint64_t group_by_col_index = current_columns.size() + right_table.group_by_column_index;
+
             for (int i = 0; i < right_table.current_columns.size(); i++)
                 current_columns.push_back(nullptr);
 
             materialized_columns.push_back(std::move(join_data.second));
 
-            current_columns[rel.condition.operands[1].input] = &materialized_columns[materialized_columns.size() - 1];
+            current_columns[group_by_col_index] = &materialized_columns[materialized_columns.size() - 1];
         }
 
         return events;
