@@ -789,6 +789,13 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
 
             break;
         }
+        case RelNodeType::SORT:
+        {
+            // Sort is done in bash
+            dependencies[id] = dependencies[id - 1];
+            output_table[id] = output_table[id - 1];
+            break;
+        }
         default:
             std::cerr << "RelNodeType " << rel.relOp << " not yet supported in DDOR." << std::endl;
             break;

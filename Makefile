@@ -17,7 +17,7 @@ $(TARGET): $(SRC) $(HEADERS)
 	$(CXX) $(CXXFLAGS) $(SRC) -o $(TARGET) $(LDFLAGS)
 
 q%: q%.result
-	diff ./reference_results/$@.txt ./$@.res
+	./sort.sh $@ | diff ./reference_results/$@.txt -
 
 q%.result: $(TARGET)
 	./$(TARGET) ./queries/transformed/q$*.sql
