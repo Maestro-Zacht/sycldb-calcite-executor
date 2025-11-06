@@ -7,6 +7,35 @@
 #include "../gen-cpp/calciteserver_types.h"
 
 
+uint64_t count_true_flags(
+    const bool *flags,
+    int len,
+    sycl::queue &queue,
+    const std::vector<sycl::event> &dependencies = {})
+{
+    uint64_t *count = sycl::malloc_shared<uint64_t>(1, queue);
+    *count = 0;
+
+    queue.submit(
+        [&](sycl::handler &cgh)
+        {
+            cgh.depends_on(dependencies);
+            cgh.parallel_for(
+                sycl::range<1>(len),
+                sycl::reduction(count, sycl::plus<>()),
+                [=](sycl::id<1> idx, auto &sum)
+                {
+                    if (flags[idx[0]])
+                        sum.combine(1);
+                }
+            );
+        }
+    ).wait();
+    uint64_t result = *count;
+    sycl::free(count, queue);
+    return result;
+}
+
 class TransientTable
 {
 private:
@@ -48,6 +77,17 @@ public:
         group_by_column = current_columns[col];
         group_by_column_index = col;
     }
+
+    void copy_flags_to_host()
+    {
+        gpu_queue.copy(flags_gpu, flags_host, nrows).wait();
+    }
+
+    uint64_t count_flags_true(std::vector<sycl::event> dependencies = {})
+    {
+        return count_true_flags(flags_gpu, nrows, gpu_queue, dependencies);
+    }
+
 
     friend std::ostream &operator<<(std::ostream &out, const TransientTable &table)
     {
@@ -492,6 +532,7 @@ public:
                     dependencies
                 );
                 events.push_back(e);
+                e.wait();
             }
 
             auto e1 = gpu_queue.submit(

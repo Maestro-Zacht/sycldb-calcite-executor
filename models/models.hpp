@@ -140,12 +140,12 @@ public:
         if (on_device)
         {
             data_device = reinterpret_cast<int *>(init_data);
-            data_host = cpu_allocator.alloc<int>(count);
+            data_host = reinterpret_cast<int *>(cpu_allocator.alloc<uint64_t>(count));
         }
         else
         {
             data_host = reinterpret_cast<int *>(init_data);
-            data_device = gpu_allocator.alloc<int>(count);
+            data_device = reinterpret_cast<int *>(gpu_allocator.alloc<uint64_t>(count));
         }
 
         min = 0;

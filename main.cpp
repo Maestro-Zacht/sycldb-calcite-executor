@@ -419,6 +419,13 @@ std::chrono::duration<double, std::milli> execute_result(
                 ht_dependencies = { e2 };
             }
         }
+
+        // if (rel.relOp != RelNodeType::TABLE_SCAN)
+        // {
+        //     std::cout << "rows selected after operation " << id << ": "
+        //         << count_true_flags(tables[output_table[id]].flags, tables[output_table[id]].col_len, queue, dependencies[id])
+        //         << std::endl;
+        // }
     }
 
     #if USE_FUSION
@@ -800,6 +807,11 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
             std::cerr << "RelNodeType " << rel.relOp << " not yet supported in DDOR." << std::endl;
             break;
         }
+        // if (rel.relOp != RelNodeType::TABLE_SCAN)
+        // {
+        //     std::cout << "rows selected after operation " << id << ": "
+        //         << transient_tables[output_table[id]].count_flags_true(dependencies[id]) << std::endl;
+        // }
     }
 
     // std::cout << "Waiting for all operations to complete." << std::endl;
@@ -821,9 +833,10 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
     if (!output_done)
         perf_out << duration.count() << '\n';
     #else
-    const TransientTable &final_table = transient_tables[output_table[result.rels.size() - 1]];
+    TransientTable &final_table = transient_tables[output_table[result.rels.size() - 1]];
 
-    std::cout << "Final Result Table:\n" << final_table << "Number of rows: " << final_table.get_nrows() << std::endl;
+    final_table.copy_flags_to_host();
+
     save_result(final_table, data_path);
     #endif
 
