@@ -14,10 +14,12 @@ public:
 
     template <typename T>
     T *alloc(uint64_t count);
+
+    void reset();
 };
 
 memory_manager::memory_manager(sycl::queue &queue, uint64_t size, bool alloc_on_host)
-    : size(size), allocated(0), queue(queue)
+    : size(size), queue(queue)
 {
 
     if (alloc_on_host)
@@ -25,8 +27,7 @@ memory_manager::memory_manager(sycl::queue &queue, uint64_t size, bool alloc_on_
     else
         memory_region = sycl::malloc_device<char>(size, queue);
 
-    queue.memset(memory_region, 0, size).wait();
-    current_free = memory_region;
+    reset();
 }
 
 
@@ -55,4 +56,11 @@ T *memory_manager::alloc(uint64_t count)
     allocated += bytes;
 
     return ptr;
+}
+
+void memory_manager::reset()
+{
+    queue.memset(memory_region, 0, size).wait();
+    current_free = memory_region;
+    allocated = 0;
 }

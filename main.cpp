@@ -611,6 +611,8 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
     Table tables[MAX_NTABLES],
     sycl::queue &gpu_queue,
     sycl::queue &cpu_queue,
+    memory_manager &gpu_allocator,
+    memory_manager &cpu_allocator,
     std::ostream &perf_out = std::cout)
 {
     #if PERFORMANCE_MEASUREMENT_ACTIVE
@@ -625,8 +627,6 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
     ExecutionInfo exec_info = parse_execution_info(result);
     std::vector<int> output_table(result.rels.size(), -1);
     std::vector<TransientTable> transient_tables;
-    memory_manager gpu_allocator(gpu_queue, SIZE_TEMP_MEMORY_GPU, false);
-    memory_manager cpu_allocator(gpu_queue, SIZE_TEMP_MEMORY_CPU, true);
     std::map<int, std::vector<sycl::event>> dependencies; // used to track dependencies between operations
 
     for (const RelNode &rel : result.rels)
@@ -919,6 +919,9 @@ int data_driven_operator_replacement(int argc, char **argv)
 
     #endif
 
+    memory_manager gpu_allocator(gpu_queue, SIZE_TEMP_MEMORY_GPU, false);
+    memory_manager cpu_allocator(gpu_queue, SIZE_TEMP_MEMORY_CPU, true);
+
     try
     {
         // std::cout << "SQL Query: " << sql << std::endl;
@@ -941,7 +944,9 @@ int data_driven_operator_replacement(int argc, char **argv)
 
             auto start = std::chrono::high_resolution_clock::now();
             client.parse(result, sql);
-            auto exec_time = ddor_execute_result(result, argv[1], tables, gpu_queue, cpu_queue, perf_file);
+            auto exec_time = ddor_execute_result(result, argv[1], tables, gpu_queue, cpu_queue, gpu_allocator, cpu_allocator, perf_file);
+            gpu_allocator.reset();
+            cpu_allocator.reset();
             auto end = std::chrono::high_resolution_clock::now();
             std::chrono::duration<double, std::milli> total_time = end - start;
 
@@ -954,7 +959,7 @@ int data_driven_operator_replacement(int argc, char **argv)
         PlanResult result;
         client.parse(result, sql);
 
-        auto time = ddor_execute_result(result, argv[1], tables, gpu_queue, cpu_queue);
+        auto time = ddor_execute_result(result, argv[1], tables, gpu_queue, cpu_queue, gpu_allocator, cpu_allocator);
         std::cout << "DDOR execution completed in " << time.count() << " ms." << std::endl;
 
         #endif
