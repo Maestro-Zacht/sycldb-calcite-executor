@@ -619,10 +619,10 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
     bool output_done = false;
     #endif
 
-    // #if USE_FUSION
-    // sycl::ext::codeplay::experimental::fusion_wrapper fw_gpu{ gpu_queue }, fw_cpu{ cpu_queue };
+    #if USE_FUSION
+    sycl::ext::codeplay::experimental::fusion_wrapper fw_gpu{ gpu_queue }, fw_cpu{ cpu_queue };
     // bool fusion_active = false;
-    // #endif
+    #endif
 
     ExecutionInfo exec_info = parse_execution_info(result);
     std::vector<int> output_table(result.rels.size(), -1);
@@ -660,7 +660,7 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
             return std::chrono::duration<double, std::milli>::zero();
         }
 
-        TransientTable &t = transient_tables.emplace_back(table_ptr, gpu_queue, cpu_queue, gpu_allocator, cpu_allocator);
+        TransientTable &t = transient_tables.emplace_back(table_ptr, gpu_queue, cpu_queue, fw_gpu, fw_cpu, gpu_allocator, cpu_allocator);
 
         if (exec_info.group_by_columns.find(rel.tables[1]) != exec_info.group_by_columns.end())
             t.set_group_by_column(exec_info.group_by_columns[rel.tables[1]]);
@@ -707,12 +707,11 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
             auto start_filter = std::chrono::high_resolution_clock::now();
             #endif
             int prev_table_idx = output_table[id - 1];
-            dependencies[id] = transient_tables[prev_table_idx].apply_filter(
+            transient_tables[prev_table_idx].apply_filter(
                 rel.condition,
                 "",
                 gpu_allocator,
-                cpu_allocator,
-                dependencies[id - 1]
+                cpu_allocator
             );
             output_table[id] = prev_table_idx;
             #if not PERFORMANCE_MEASUREMENT_ACTIVE
@@ -729,11 +728,10 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
             auto start_project = std::chrono::high_resolution_clock::now();
             #endif
             int prev_table_idx = output_table[id - 1];
-            dependencies[id] = transient_tables[prev_table_idx].apply_project(
+            transient_tables[prev_table_idx].apply_project(
                 rel.exprs,
                 gpu_allocator,
-                cpu_allocator,
-                dependencies[id - 1]
+                cpu_allocator
             );
             output_table[id] = prev_table_idx;
             #if not PERFORMANCE_MEASUREMENT_ACTIVE
@@ -750,12 +748,11 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
             auto start_aggregate = std::chrono::high_resolution_clock::now();
             #endif
             int prev_table_idx = output_table[id - 1];
-            dependencies[id] = transient_tables[prev_table_idx].apply_aggregate(
+            transient_tables[prev_table_idx].apply_aggregate(
                 rel.aggs[0],
                 rel.group,
                 gpu_allocator,
-                cpu_allocator,
-                dependencies[id - 1]
+                cpu_allocator
             );
             output_table[id] = prev_table_idx;
             #if not PERFORMANCE_MEASUREMENT_ACTIVE
@@ -931,10 +928,10 @@ int data_driven_operator_replacement(int argc, char **argv)
         #if PERFORMANCE_MEASUREMENT_ACTIVE
         std::string sql_filename = argv[1];
         std::string query_name = sql_filename.substr(sql_filename.find_last_of("/") + 1, 3);
-        std::ofstream perf_file(query_name + "-performance-ddor.log", std::ios::out | std::ios::trunc);
+        std::ofstream perf_file(query_name + "-performance-ddor-fusion.log", std::ios::out | std::ios::trunc);
         if (!perf_file.is_open())
         {
-            std::cerr << "Could not open performance log file: " << query_name << "-performance-ddor.log" << std::endl;
+            std::cerr << "Could not open performance log file: " << query_name << "-performance-ddor-fusion.log" << std::endl;
             return 1;
         }
 

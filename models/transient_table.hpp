@@ -2,6 +2,8 @@
 
 #include <sycl/sycl.hpp>
 
+#include "../common.hpp"
+
 #include "models.hpp"
 #include "execution.hpp"
 #include "../operations/memory_manager.hpp"
@@ -44,6 +46,9 @@ class TransientTable
 private:
     bool *flags_host, *flags_gpu;
     sycl::queue gpu_queue, cpu_queue;
+    #if USE_FUSION
+    sycl::ext::codeplay::experimental::fusion_wrapper fw_gpu, fw_cpu;
+    #endif
     std::vector<Column *> current_columns;
     std::vector<Column> materialized_columns;
     uint64_t nrows;
@@ -56,6 +61,10 @@ private:
     {
         uint64_t segment_num = nrows / SEGMENT_SIZE + (nrows % SEGMENT_SIZE > 0 ? 1 : 0);
         std::vector<sycl::event> events;
+
+        if (pending_kernels.size() == 0)
+            return events;
+
         for (const auto &phases : pending_kernels)
         {
             if (phases.size() != segment_num)
@@ -69,6 +78,11 @@ private:
         {
             std::vector<sycl::event> deps = pending_kernels_dependencies;
             sycl::event e;
+
+            #if USE_FUSION
+            fw_gpu.start_fusion();
+            #endif
+
             for (const auto &phases : pending_kernels)
             {
                 const KernelBundle &bundle = phases[segment_index];
@@ -76,6 +90,11 @@ private:
                 deps.clear();
                 deps.push_back(e);
             }
+
+            #if USE_FUSION
+            fw_gpu.complete_fusion(sycl::ext::codeplay::experimental::property::no_barriers {});
+            #endif
+
             events.push_back(e);
         }
 
@@ -85,8 +104,25 @@ private:
         return events;
     }
 public:
-    TransientTable(Table *base_table, sycl::queue &gpu_queue, sycl::queue &cpu_queue, memory_manager &gpu_allocator, memory_manager &cpu_allocator)
-        : gpu_queue(gpu_queue), cpu_queue(cpu_queue), nrows(base_table->get_nrows()), group_by_column(nullptr), group_by_column_index(0)
+    TransientTable(Table *base_table,
+        sycl::queue &gpu_queue,
+        sycl::queue &cpu_queue,
+        #if USE_FUSION
+        sycl::ext::codeplay::experimental::fusion_wrapper fw_gpu,
+        sycl::ext::codeplay::experimental::fusion_wrapper fw_cpu,
+        #endif
+        memory_manager &gpu_allocator,
+        memory_manager &cpu_allocator
+    )
+        : gpu_queue(gpu_queue),
+        cpu_queue(cpu_queue),
+        #if USE_FUSION
+        fw_gpu(fw_gpu),
+        fw_cpu(fw_cpu),
+        #endif
+        nrows(base_table->get_nrows()),
+        group_by_column(nullptr),
+        group_by_column_index(0)
     {
         flags_gpu = gpu_allocator.alloc<bool>(nrows);
         auto e1 = gpu_queue.fill<bool>(flags_gpu, true, nrows);
@@ -462,13 +498,14 @@ public:
         const AggType &agg,
         const std::vector<long> &group,
         memory_manager &gpu_allocator,
-        memory_manager &cpu_allocator,
-        const std::vector<sycl::event> &dependencies)
+        memory_manager &cpu_allocator)
     {
         std::vector<sycl::event> events;
 
         if (group.size() == 0)
         {
+            std::vector<sycl::event> dependencies = execute_pending_kernels();
+
             Column &result_column = materialized_columns.emplace_back(
                 1,
                 gpu_queue,
@@ -534,6 +571,7 @@ public:
         }
         else
         {
+            std::vector<sycl::event> dependencies;
             uint64_t prod_ranges = 1;
             int *min = cpu_allocator.alloc<int>(group.size()),
                 *max = cpu_allocator.alloc<int>(group.size());
