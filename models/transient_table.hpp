@@ -3,8 +3,11 @@
 #include <sycl/sycl.hpp>
 
 #include "models.hpp"
+#include "execution.hpp"
 #include "../operations/memory_manager.hpp"
 #include "../gen-cpp/calciteserver_types.h"
+
+#include "../kernels/common.hpp"
 
 
 uint64_t count_true_flags(
@@ -46,6 +49,7 @@ private:
     uint64_t nrows;
     Column *group_by_column;
     uint64_t group_by_column_index;
+    std::vector<std::vector<KernelBundle>> pending_kernels;
 public:
     TransientTable(Table *base_table, sycl::queue &gpu_queue, sycl::queue &cpu_queue, memory_manager &gpu_allocator, memory_manager &cpu_allocator)
         : gpu_queue(gpu_queue), cpu_queue(cpu_queue), nrows(base_table->get_nrows()), group_by_column(nullptr), group_by_column_index(0)
@@ -107,70 +111,67 @@ public:
         return out;
     }
 
-    std::vector<sycl::event> apply_filter(
+    void apply_filter(
         const ExprType &expr,
         std::string parent_op,
         memory_manager &gpu_allocator,
-        memory_manager &cpu_allocator,
-        const std::vector<sycl::event> &dependencies)
+        memory_manager &cpu_allocator)
     {
         // Recursive parsing of EXPR types. LITERAL and COLUMN are handled in parent EXPR type.
         if (expr.exprType != ExprOption::EXPR)
         {
             std::cerr << "Filter condition: Unsupported parsing ExprType " << expr.exprType << std::endl;
-            return {};
+            return;
         }
 
-        std::vector<sycl::event> events;
+        std::vector<KernelBundle> ops;
 
         if (expr.op == "SEARCH")
         {
             int col_index = expr.operands[0].input;
             const std::vector<Segment> &segments = current_columns[col_index]->get_segments();
 
-            events.reserve(segments.size());
+            ops.reserve(segments.size());
 
             for (size_t segment_number = 0; segment_number < segments.size(); segment_number++)
             {
                 const Segment &segment = segments[segment_number];
-                events.push_back(
+                ops.push_back(
                     segment.search_operator(
                         expr,
                         parent_op,
                         gpu_allocator,
                         cpu_allocator,
                         flags_gpu + segment_number * SEGMENT_SIZE,
-                        flags_host + segment_number * SEGMENT_SIZE,
-                        dependencies
+                        flags_host + segment_number * SEGMENT_SIZE
                     )
                 );
             }
+
+            pending_kernels.push_back(ops);
         }
         else if (is_filter_logical(expr.op))
         {
             // Logical operation between other expressions. Pass parent op to the first then use the current op.
             // TODO: check if passing parent logic is correct in general
             bool parent_op_used = false;
-            std::vector<sycl::event> child_deps(dependencies);
             for (const ExprType &operand : expr.operands)
             {
-                child_deps = apply_filter(
+                apply_filter(
                     operand,
                     parent_op_used ? expr.op : parent_op,
                     gpu_allocator,
-                    cpu_allocator,
-                    child_deps
+                    cpu_allocator
                 );
                 parent_op_used = true;
             }
-            events.insert(events.end(), child_deps.begin(), child_deps.end());
         }
         else
         {
             if (expr.operands.size() != 2)
             {
                 std::cerr << "Filter condition: Unsupported number of operands for EXPR" << std::endl;
-                return {};
+                return;
             }
 
             Column *cols[2];
@@ -193,39 +194,42 @@ public:
                         << expr.operands[i].exprType
                         << " for comparison operand"
                         << std::endl;
-                    return {};
+                    return;
                 }
             }
 
             const std::vector<Segment> &segments = cols[0]->get_segments();
-            events.reserve(segments.size());
+            ops.reserve(segments.size());
 
             for (size_t segment_number = 0; segment_number < segments.size(); segment_number++)
             {
                 const Segment &segment = segments[segment_number];
-                events.push_back(
-                    literal ?
-                    segment.filter_operator(
-                        expr.op,
-                        parent_op,
-                        literal_value,
-                        flags_gpu + segment_number * SEGMENT_SIZE,
-                        flags_host + segment_number * SEGMENT_SIZE,
-                        dependencies
-                    ) :
-                    segment.filter_operator(
-                        expr.op,
-                        parent_op,
-                        cols[1]->get_segments()[segment_number],
-                        flags_gpu + segment_number * SEGMENT_SIZE,
-                        flags_host + segment_number * SEGMENT_SIZE,
-                        dependencies
+                KernelBundle bundle;
+
+                bundle.add_kernel(
+                    std::unique_ptr<KernelDefinition>(
+                        literal ?
+                        segment.filter_operator(
+                            expr.op,
+                            parent_op,
+                            literal_value,
+                            flags_gpu + segment_number * SEGMENT_SIZE,
+                            flags_host + segment_number * SEGMENT_SIZE
+                        ) :
+                        segment.filter_operator(
+                            expr.op,
+                            parent_op,
+                            cols[1]->get_segments()[segment_number],
+                            flags_gpu + segment_number * SEGMENT_SIZE,
+                            flags_host + segment_number * SEGMENT_SIZE
+                        )
                     )
                 );
+                ops.push_back(bundle);
             }
-        }
 
-        return events;
+            pending_kernels.push_back(ops);
+        }
     }
 
     std::vector<sycl::event> apply_project(

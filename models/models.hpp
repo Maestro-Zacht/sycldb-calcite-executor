@@ -330,14 +330,13 @@ public:
         return e;
     }
 
-    sycl::event search_operator(
+    KernelBundle search_operator(
         const ExprType &expr,
         std::string parent_op,
         memory_manager &gpu_allocator,
         memory_manager &cpu_allocator,
         bool *gpu_flags,
-        bool *cpu_flags,
-        const std::vector<sycl::event> &dependencies) const
+        bool *cpu_flags) const
     {
         memory_manager &allocator = on_device ? gpu_allocator : cpu_allocator;
         sycl::queue &queue = const_cast<sycl::queue &>(on_device ? gpu_queue : cpu_queue);
@@ -346,15 +345,37 @@ public:
 
         bool *local_flags = allocator.alloc<bool>(nrows);
 
-        sycl::event last_event;
+        KernelBundle operations;
 
         if (expr.operands[1].literal.rangeSet.size() == 1) // range
         {
             int lower = std::stoi(expr.operands[1].literal.rangeSet[0][1]),
                 upper = std::stoi(expr.operands[1].literal.rangeSet[0][2]);
 
-            last_event = selection(local_flags, data, ">=", lower, "NONE", nrows, queue, dependencies);
-            last_event = selection(local_flags, data, "<=", upper, "AND", nrows, queue, { last_event });
+            operations.add_kernel(
+                std::unique_ptr<KernelDefinition>(
+                    selection_def(
+                        local_flags,
+                        data,
+                        ">=",
+                        lower,
+                        "NONE",
+                        nrows
+                    )
+                )
+            );
+            operations.add_kernel(
+                std::unique_ptr<KernelDefinition>(
+                    selection_def(
+                        local_flags,
+                        data,
+                        "<=",
+                        upper,
+                        "AND",
+                        nrows
+                    )
+                )
+            );
 
             // TODO: min and max here
             // table_data.columns[col_index].min_value = lower;
@@ -365,64 +386,79 @@ public:
             int first = std::stoi(expr.operands[1].literal.rangeSet[0][1]),
                 second = std::stoi(expr.operands[1].literal.rangeSet[1][1]);
 
-            last_event = selection(local_flags, data, "==", first, "NONE", nrows, queue, dependencies);
-            last_event = selection(local_flags, data, "==", second, "OR", nrows, queue, { last_event });
+            operations.add_kernel(
+                std::unique_ptr<KernelDefinition>(
+                    selection_def(
+                        local_flags,
+                        data,
+                        "==",
+                        first,
+                        "NONE",
+                        nrows
+                    )
+                )
+            );
+            operations.add_kernel(
+                std::unique_ptr<KernelDefinition>(
+                    selection_def(
+                        local_flags,
+                        data,
+                        "==",
+                        second,
+                        "OR",
+                        nrows
+                    )
+                )
+            );
         }
 
         logical_op logic = get_logical_op(parent_op);
 
-        return queue.submit(
-            [&](sycl::handler &cgh)
-            {
-                cgh.depends_on(last_event);
-                cgh.parallel_for(
-                    nrows,
-                    [=](sycl::id<1> idx)
-                    {
-                        flags[idx[0]] = logical(logic, flags[idx[0]], local_flags[idx[0]]);
-                    }
-                );
-            }
+        operations.add_kernel(
+            std::unique_ptr<KernelDefinition>(
+                new LogicalKernel(
+                    logic,
+                    flags,
+                    local_flags,
+                    nrows
+                )
+            )
         );
+
+        return operations;
     }
 
-    sycl::event filter_operator(
+    KernelDefinition *filter_operator(
         std::string op,
         std::string parent_op,
         int literal_value,
         bool *gpu_flags,
-        bool *cpu_flags,
-        const std::vector<sycl::event> &dependencies) const
+        bool *cpu_flags) const
     {
-        return selection(
+        return selection_def(
             on_device ? gpu_flags : cpu_flags,
             on_device ? data_device : data_host,
             op,
             literal_value,
             parent_op,
-            nrows,
-            const_cast<sycl::queue &>(on_device ? gpu_queue : cpu_queue),
-            dependencies
+            nrows
         );
     }
 
-    sycl::event filter_operator(
+    KernelDefinition *filter_operator(
         std::string op,
         std::string parent_op,
         const Segment &other_segment,
         bool *gpu_flags,
-        bool *cpu_flags,
-        const std::vector<sycl::event> &dependencies) const
+        bool *cpu_flags) const
     {
-        return selection(
+        return selection_def(
             on_device ? gpu_flags : cpu_flags,
             on_device ? data_device : data_host,
             op,
             other_segment.get_data(on_device),
             parent_op,
-            nrows,
-            const_cast<sycl::queue &>(on_device ? gpu_queue : cpu_queue),
-            dependencies
+            nrows
         );
     }
 
