@@ -207,22 +207,27 @@ public:
                 KernelBundle bundle;
 
                 bundle.add_kernel(
-                    std::unique_ptr<KernelDefinition>(
+                    KernelData(
+                        literal ? KernelType::SelectionKernelLiteral : KernelType::SelectionKernelColumns,
                         literal ?
-                        segment.filter_operator(
-                            expr.op,
-                            parent_op,
-                            literal_value,
-                            flags_gpu + segment_number * SEGMENT_SIZE,
-                            flags_host + segment_number * SEGMENT_SIZE
-                        ) :
-                        segment.filter_operator(
-                            expr.op,
-                            parent_op,
-                            cols[1]->get_segments()[segment_number],
-                            flags_gpu + segment_number * SEGMENT_SIZE,
-                            flags_host + segment_number * SEGMENT_SIZE
-                        )
+                        static_cast<KernelDefinition *>(
+                            segment.filter_operator(
+                                expr.op,
+                                parent_op,
+                                literal_value,
+                                flags_gpu + segment_number * SEGMENT_SIZE,
+                                flags_host + segment_number * SEGMENT_SIZE
+                            )
+                            ) :
+                        static_cast<KernelDefinition *>(
+                            segment.filter_operator(
+                                expr.op,
+                                parent_op,
+                                cols[1]->get_segments()[segment_number],
+                                flags_gpu + segment_number * SEGMENT_SIZE,
+                                flags_host + segment_number * SEGMENT_SIZE
+                            )
+                            )
                     )
                 );
                 ops.push_back(bundle);
@@ -232,13 +237,11 @@ public:
         }
     }
 
-    std::vector<sycl::event> apply_project(
+    void apply_project(
         const std::vector<ExprType> &exprs,
         memory_manager &gpu_allocator,
-        memory_manager &cpu_allocator,
-        const std::vector<sycl::event> &dependencies)
+        memory_manager &cpu_allocator)
     {
-        std::vector<sycl::event> events;
         std::vector<Column *> new_columns;
         new_columns.reserve(exprs.size() + 50);
 
@@ -267,9 +270,9 @@ public:
                     false
                 );
 
-                auto fill_events = new_col.fill_with_literal(literal_value);
-                events.insert(events.end(), fill_events.begin(), fill_events.end());
+                std::vector<KernelBundle> fill_bundles = new_col.fill_with_literal(literal_value);
 
+                pending_kernels.push_back(fill_bundles);
                 new_columns.push_back(&new_col);
                 break;
             }
@@ -278,7 +281,7 @@ public:
                 if (expr.operands.size() != 2)
                 {
                     std::cerr << "Project operation: Unsupported number of operands for EXPR" << std::endl;
-                    return {};
+                    return;
                 }
 
                 Column &new_col = materialized_columns.emplace_back(
@@ -291,17 +294,21 @@ public:
                     false
                 );
 
+                std::vector<KernelBundle> ops;
+
+                std::vector<Segment> &segments_result = new_col.get_segments();
+                ops.reserve(segments_result.size());
+
                 if (expr.operands[0].exprType == ExprOption::COLUMN &&
                     expr.operands[1].exprType == ExprOption::COLUMN)
                 {
                     const std::vector<Segment> &segments_a = current_columns[expr.operands[0].input]->get_segments();
                     const std::vector<Segment> &segments_b = current_columns[expr.operands[1].input]->get_segments();
-                    std::vector<Segment> &segments_result = new_col.get_segments();
 
                     if (segments_a.size() != segments_b.size())
                     {
                         std::cerr << "Project operation: Mismatched segment sizes between columns" << std::endl;
-                        return {};
+                        return;
                     }
 
                     for (size_t segment_number = 0; segment_number < segments_a.size(); segment_number++)
@@ -309,83 +316,93 @@ public:
                         const Segment &segment_a = segments_a[segment_number];
                         const Segment &segment_b = segments_b[segment_number];
                         Segment &segment_result = segments_result[segment_number];
+                        KernelBundle bundle;
 
                         bool on_device = segment_a.is_on_device();
                         if (segment_b.is_on_device() != on_device || segment_result.is_on_device() != on_device)
                         {
                             std::cerr << "Project operation: Mismatched segment locations between columns" << std::endl;
-                            return {};
+                            return;
                         }
 
-                        events.push_back(
-                            segment_result.perform_operator(
-                                segment_a,
-                                segment_b,
-                                (on_device ? flags_gpu : flags_host) + segment_number * SEGMENT_SIZE,
-                                expr.op,
-                                dependencies
+                        bundle.add_kernel(
+                            KernelData(
+                                KernelType::PerformOperationKernelColumns,
+                                segment_result.perform_operator(
+                                    segment_a,
+                                    segment_b,
+                                    (on_device ? flags_gpu : flags_host) + segment_number * SEGMENT_SIZE,
+                                    expr.op
+                                )
                             )
                         );
+                        ops.push_back(bundle);
                     }
                 }
                 else if (expr.operands[0].exprType == ExprOption::LITERAL &&
                     expr.operands[1].exprType == ExprOption::COLUMN)
                 {
                     const std::vector<Segment> &segments = current_columns[expr.operands[1].input]->get_segments();
-                    std::vector<Segment> &segments_result = new_col.get_segments();
 
                     for (size_t segment_number = 0; segment_number < segments.size(); segment_number++)
                     {
                         const Segment &segment = segments[segment_number];
                         Segment &segment_result = segments_result[segment_number];
+                        KernelBundle bundle;
 
                         bool on_device = segment.is_on_device();
 
                         if (segment_result.is_on_device() != on_device)
                         {
                             std::cerr << "Project operation: Mismatched segment locations between columns" << std::endl;
-                            return {};
+                            return;
                         }
 
-                        events.push_back(
-                            segment_result.perform_operator(
-                                (int)expr.operands[0].literal.value,
-                                segment,
-                                (on_device ? flags_gpu : flags_host) + segment_number * SEGMENT_SIZE,
-                                expr.op,
-                                dependencies
+                        bundle.add_kernel(
+                            KernelData(
+                                KernelType::PerformOperationKernelLiteralFirst,
+                                segment_result.perform_operator(
+                                    (int)expr.operands[0].literal.value,
+                                    segment,
+                                    (on_device ? flags_gpu : flags_host) + segment_number * SEGMENT_SIZE,
+                                    expr.op
+                                )
                             )
                         );
+                        ops.push_back(bundle);
                     }
                 }
                 else if (expr.operands[0].exprType == ExprOption::COLUMN &&
                     expr.operands[1].exprType == ExprOption::LITERAL)
                 {
                     const std::vector<Segment> &segments = current_columns[expr.operands[0].input]->get_segments();
-                    std::vector<Segment> &segments_result = new_col.get_segments();
 
                     for (size_t segment_number = 0; segment_number < segments.size(); segment_number++)
                     {
                         const Segment &segment = segments[segment_number];
                         Segment &segment_result = segments_result[segment_number];
+                        KernelBundle bundle;
 
                         bool on_device = segment.is_on_device();
 
                         if (segment_result.is_on_device() != on_device)
                         {
                             std::cerr << "Project operation: Mismatched segment locations between columns" << std::endl;
-                            return {};
+                            return;
                         }
 
-                        events.push_back(
-                            segment_result.perform_operator(
-                                segment,
-                                (int)expr.operands[1].literal.value,
-                                (on_device ? flags_gpu : flags_host) + segment_number * SEGMENT_SIZE,
-                                expr.op,
-                                dependencies
+                        bundle.add_kernel(
+                            KernelData(
+                                KernelType::PerformOperationKernelLiteralSecond,
+                                segment_result.perform_operator(
+                                    segment,
+                                    (int)expr.operands[1].literal.value,
+                                    (on_device ? flags_gpu : flags_host) + segment_number * SEGMENT_SIZE,
+                                    expr.op
+                                )
                             )
                         );
+                        ops.push_back(bundle);
                     }
                 }
                 else
@@ -394,9 +411,10 @@ public:
                         << expr.operands[0].exprType << " and "
                         << expr.operands[1].exprType
                         << " for EXPR" << std::endl;
-                    return {};
+                    return;
                 }
 
+                pending_kernels.push_back(ops);
                 new_columns.push_back(&new_col);
                 break;
             }
@@ -404,7 +422,6 @@ public:
         }
 
         current_columns = new_columns;
-        return events;
     }
 
     std::vector<sycl::event> apply_aggregate(

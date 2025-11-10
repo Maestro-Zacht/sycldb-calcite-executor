@@ -3,6 +3,7 @@
 #include <sycl/sycl.hpp>
 
 #include "common.hpp"
+#include "../models/execution.hpp"
 
 enum comp_op
 {
@@ -186,18 +187,26 @@ sycl::event selection(
 {
     comp_op comparison = get_comp_op(op);
     logical_op logic = get_logical_op(parent_op);
-    SelectionKernelLiteral kernel(comparison, logic, flags, arr, value, col_len);
+    // SelectionKernelLiteral kernel(comparison, logic, flags, arr, value, col_len);
+    KernelDefinition *kernel_ptr = new SelectionKernelLiteral(comparison, logic, flags, arr, value, col_len);
+    KernelType kt = KernelType::SelectionKernelLiteral;
 
-    return queue.submit(
-        [&](sycl::handler &cgh)
-        {
-            cgh.depends_on(deps);
-            cgh.parallel_for(
-                kernel.get_col_len(),
-                kernel
-            );
-        }
-    );
+    if (kt == KernelType::SelectionKernelLiteral)
+    {
+        SelectionKernelLiteral *kernel = static_cast<SelectionKernelLiteral *>(kernel_ptr);
+        return queue.submit(
+            [&](sycl::handler &cgh)
+            {
+                cgh.depends_on(deps);
+                cgh.parallel_for(
+                    kernel->get_col_len(),
+                    *kernel
+                );
+            }
+        );
+    }
+    else
+        throw std::runtime_error("Invalid kernel type for selection.");
 
     // std::cout << "Running selection with comparison: " << op << " and parent op " << parent_op << std::endl;
 }
@@ -214,18 +223,26 @@ sycl::event selection(
 {
     comp_op comparison = get_comp_op(op);
     logical_op logic = get_logical_op(parent_op);
-    SelectionKernelColumns kernel(comparison, logic, flags, operand1, operand2, col_len);
+    // SelectionKernelColumns kernel(comparison, logic, flags, operand1, operand2, col_len);
+    KernelDefinition *kernel_ptr = new SelectionKernelColumns(comparison, logic, flags, operand1, operand2, col_len);
+    KernelType kt = KernelType::SelectionKernelColumns;
 
-    return queue.submit(
-        [&](sycl::handler &cgh)
-        {
-            cgh.depends_on(deps);
-            cgh.parallel_for(
-                kernel.get_col_len(),
-                kernel
-            );
-        }
-    );
+    if (kt == KernelType::SelectionKernelColumns)
+    {
+        SelectionKernelColumns *kernel = static_cast<SelectionKernelColumns *>(kernel_ptr);
+        return queue.submit(
+            [&](sycl::handler &cgh)
+            {
+                cgh.depends_on(deps);
+                cgh.parallel_for(
+                    kernel->get_col_len(),
+                    *kernel
+                );
+            }
+        );
+    }
+    else
+        throw std::runtime_error("Invalid kernel type for selection.");
 
     // std::cout << "Running selection with comparison: " << op << " and parent op " << parent_op << std::endl;
 }

@@ -7,9 +7,12 @@
 #include "../operations/memory_manager.hpp"
 #include "../gen-cpp/calciteserver_types.h"
 #include "../kernels/selection.hpp"
+#include "../kernels/projection.hpp"
 #include "../kernels/types.hpp"
 #include "../kernels/join.hpp"
 #include "../operations/load.hpp"
+
+#include "execution.hpp"
 
 #define SEGMENT_SIZE (((uint64_t)1) << 22)
 
@@ -199,7 +202,7 @@ public:
         }
     }
 
-    sycl::event fill_with_literal(int literal)
+    FillKernel *fill_with_literal(int literal)
     {
         if (!is_materialized)
             throw std::runtime_error("Cannot fill non-materialized segment");
@@ -211,10 +214,11 @@ public:
 
         dirty_cache = true;
 
-        if (on_device)
-            return gpu_queue.fill<int>(data_device, literal, nrows);
-        else
-            return cpu_queue.fill<int>(data_host, literal, nrows);
+        return new FillKernel(
+            on_device ? data_device : data_host,
+            literal,
+            nrows
+        );
     }
 
     bool is_on_device() const { return on_device; }
@@ -339,7 +343,6 @@ public:
         bool *cpu_flags) const
     {
         memory_manager &allocator = on_device ? gpu_allocator : cpu_allocator;
-        sycl::queue &queue = const_cast<sycl::queue &>(on_device ? gpu_queue : cpu_queue);
         int *data = on_device ? data_device : data_host;
         bool *flags = on_device ? gpu_flags : cpu_flags;
 
@@ -353,7 +356,8 @@ public:
                 upper = std::stoi(expr.operands[1].literal.rangeSet[0][2]);
 
             operations.add_kernel(
-                std::unique_ptr<KernelDefinition>(
+                KernelData(
+                    KernelType::SelectionKernelLiteral,
                     selection_def(
                         local_flags,
                         data,
@@ -365,7 +369,8 @@ public:
                 )
             );
             operations.add_kernel(
-                std::unique_ptr<KernelDefinition>(
+                KernelData(
+                    KernelType::SelectionKernelLiteral,
                     selection_def(
                         local_flags,
                         data,
@@ -387,7 +392,8 @@ public:
                 second = std::stoi(expr.operands[1].literal.rangeSet[1][1]);
 
             operations.add_kernel(
-                std::unique_ptr<KernelDefinition>(
+                KernelData(
+                    KernelType::SelectionKernelLiteral,
                     selection_def(
                         local_flags,
                         data,
@@ -399,7 +405,8 @@ public:
                 )
             );
             operations.add_kernel(
-                std::unique_ptr<KernelDefinition>(
+                KernelData(
+                    KernelType::SelectionKernelLiteral,
                     selection_def(
                         local_flags,
                         data,
@@ -415,7 +422,8 @@ public:
         logical_op logic = get_logical_op(parent_op);
 
         operations.add_kernel(
-            std::unique_ptr<KernelDefinition>(
+            KernelData(
+                KernelType::LogicalKernel,
                 new LogicalKernel(
                     logic,
                     flags,
@@ -428,7 +436,7 @@ public:
         return operations;
     }
 
-    KernelDefinition *filter_operator(
+    SelectionKernelLiteral *filter_operator(
         std::string op,
         std::string parent_op,
         int literal_value,
@@ -445,7 +453,7 @@ public:
         );
     }
 
-    KernelDefinition *filter_operator(
+    SelectionKernelColumns *filter_operator(
         std::string op,
         std::string parent_op,
         const Segment &other_segment,
@@ -462,82 +470,67 @@ public:
         );
     }
 
-    sycl::event perform_operator(
+    PerformOperationKernelColumns *perform_operator(
         const Segment &first_operand,
         const Segment &second_operand,
         const bool *flags,
-        const std::string &op,
-        const std::vector<sycl::event> &dependencies)
+        const std::string &op)
     {
-        sycl::event e = perform_operation(
-            on_device ? data_device : data_host,
-            first_operand.get_data(on_device),
-            second_operand.get_data(on_device),
-            flags,
-            nrows,
-            op,
-            const_cast<sycl::queue &>(on_device ? gpu_queue : cpu_queue),
-            dependencies
-        );
-
         min = std::min(first_operand.min, second_operand.min);
         max = std::max(first_operand.max, second_operand.max);
 
         dirty_cache = true;
 
-        return e;
+        return new PerformOperationKernelColumns(
+            on_device ? data_device : data_host,
+            first_operand.get_data(on_device),
+            second_operand.get_data(on_device),
+            flags,
+            op,
+            nrows
+        );
     }
 
-    sycl::event perform_operator(
+    PerformOperationKernelLiteralSecond *perform_operator(
         const Segment &first_operand,
         int second_operand,
         const bool *flags,
-        const std::string &op,
-        const std::vector<sycl::event> &dependencies)
+        const std::string &op)
     {
-        sycl::event e = perform_operation(
-            on_device ? data_device : data_host,
-            first_operand.get_data(on_device),
-            second_operand,
-            flags,
-            nrows,
-            op,
-            const_cast<sycl::queue &>(on_device ? gpu_queue : cpu_queue),
-            dependencies
-        );
-
         min = first_operand.min;
         max = first_operand.max;
 
         dirty_cache = true;
 
-        return e;
+        return new PerformOperationKernelLiteralSecond(
+            on_device ? data_device : data_host,
+            first_operand.get_data(on_device),
+            second_operand,
+            flags,
+            op,
+            nrows
+        );
     }
 
-    sycl::event perform_operator(
+    PerformOperationKernelLiteralFirst *perform_operator(
         int first_operand,
         const Segment &second_operand,
         const bool *flags,
-        const std::string &op,
-        const std::vector<sycl::event> &dependencies)
+        const std::string &op)
     {
-        sycl::event e = perform_operation(
-            on_device ? data_device : data_host,
-            first_operand,
-            second_operand.get_data(on_device),
-            flags,
-            nrows,
-            op,
-            const_cast<sycl::queue &>(on_device ? gpu_queue : cpu_queue),
-            dependencies
-        );
-
         min = second_operand.min;
         max = second_operand.max;
 
         dirty_cache = true;
 
-        return e;
+        return new PerformOperationKernelLiteralFirst(
+            on_device ? data_device : data_host,
+            first_operand,
+            second_operand.get_data(on_device),
+            flags,
+            op,
+            nrows
+        );
     }
 
     sycl::event aggregate_operator(
@@ -780,15 +773,25 @@ public:
         return segments[segment_index].get_aggregate_value(offset);
     }
 
-    std::vector<sycl::event> fill_with_literal(int literal)
+    std::vector<KernelBundle> fill_with_literal(int literal)
     {
-        std::vector<sycl::event> events;
-        events.reserve(segments.size());
+        std::vector<KernelBundle> operations;
+        operations.reserve(segments.size());
 
         for (auto &seg : segments)
-            events.push_back(seg.fill_with_literal(literal));
+        {
+            KernelBundle bundle;
 
-        return events;
+            bundle.add_kernel(
+                KernelData(
+                    KernelType::FillKernel,
+                    seg.fill_with_literal(literal)
+                )
+            );
+            operations.push_back(std::move(bundle));
+        }
+
+        return operations;
     }
 
     void move_all_to_device()

@@ -4,6 +4,7 @@
 
 #include "types.hpp"
 #include "../operations/memory_manager.hpp"
+#include "common.hpp"
 
 #define PRINT_AGGREGATE_DEBUG_INFO 0
 
@@ -46,11 +47,35 @@ BinaryOp get_op_from_string(const std::string &op)
     throw std::invalid_argument("Unknown operation: " + op);
 }
 
-template <typename T>
+class PerformOperationKernelColumns : public KernelDefinition
+{
+private:
+    int *result;
+    const int *col1, *col2;
+    const bool *flags;
+    BinaryOp op_enum;
+public:
+    PerformOperationKernelColumns(int *result, const int *col1, const int *col2, const bool *flags, BinaryOp op, int col_len)
+        : KernelDefinition(col_len), result(result), col1(col1), col2(col2), flags(flags), op_enum(op)
+    {}
+
+    PerformOperationKernelColumns(int *res, const int *a, const int *b, const bool *flgs, const std::string &op, int col_len)
+        : KernelDefinition(col_len), result(res), col1(a), col2(b), flags(flgs), op_enum(get_op_from_string(op))
+    {}
+
+    void operator()(sycl::id<1> idx) const
+    {
+        if (flags[idx])
+        {
+            result[idx] = element_operation(col1[idx], col2[idx], op_enum);
+        }
+    }
+};
+
 sycl::event perform_operation(
-    T result[],
-    const T a[],
-    const T b[],
+    int result[],
+    const int a[],
+    const int b[],
     const bool flags[],
     int size,
     const std::string &op,
@@ -75,11 +100,36 @@ sycl::event perform_operation(
     );
 }
 
-template <typename T>
+class PerformOperationKernelLiteralFirst : public KernelDefinition
+{
+private:
+    int *result;
+    int literal;
+    const int *col;
+    const bool *flags;
+    BinaryOp op_enum;
+public:
+    PerformOperationKernelLiteralFirst(int *res, int lit, const int *column, const bool *flgs, BinaryOp op, int col_len)
+        : KernelDefinition(col_len), result(res), literal(lit), col(column), flags(flgs), op_enum(op)
+    {}
+
+    PerformOperationKernelLiteralFirst(int *res, int lit, const int *column, const bool *flgs, const std::string &op, int col_len)
+        : KernelDefinition(col_len), result(res), literal(lit), col(column), flags(flgs), op_enum(get_op_from_string(op))
+    {}
+
+    void operator()(sycl::id<1> idx) const
+    {
+        if (flags[idx])
+        {
+            result[idx] = element_operation(literal, col[idx], op_enum);
+        }
+    }
+};
+
 sycl::event perform_operation(
-    T result[],
-    T a,
-    const T b[],
+    int result[],
+    int a,
+    const int b[],
     const bool flags[],
     int size,
     const std::string &op,
@@ -104,11 +154,36 @@ sycl::event perform_operation(
     );
 }
 
-template <typename T>
+class PerformOperationKernelLiteralSecond : public KernelDefinition
+{
+private:
+    int *result;
+    const int *col;
+    int literal;
+    const bool *flags;
+    BinaryOp op_enum;
+public:
+    PerformOperationKernelLiteralSecond(int *res, const int *column, int lit, const bool *flgs, BinaryOp op, int col_len)
+        : KernelDefinition(col_len), result(res), col(column), literal(lit), flags(flgs), op_enum(op)
+    {}
+
+    PerformOperationKernelLiteralSecond(int *res, const int *column, int lit, const bool *flgs, const std::string &op, int col_len)
+        : KernelDefinition(col_len), result(res), col(column), literal(lit), flags(flgs), op_enum(get_op_from_string(op))
+    {}
+
+    void operator()(sycl::id<1> idx) const
+    {
+        if (flags[idx])
+        {
+            result[idx] = element_operation(col[idx], literal, op_enum);
+        }
+    }
+};
+
 sycl::event perform_operation(
-    T result[],
-    const T a[],
-    T b,
+    int result[],
+    const int a[],
+    int b,
     const bool flags[],
     int size,
     const std::string &op,
