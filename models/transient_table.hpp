@@ -538,11 +538,10 @@ public:
         memory_manager &cpu_allocator)
     {
         std::vector<sycl::event> events;
+        std::vector<sycl::event> dependencies = execute_pending_kernels();
 
         if (group.size() == 0)
         {
-            std::vector<sycl::event> dependencies = execute_pending_kernels();
-
             Column &result_column = materialized_columns.emplace_back(
                 1,
                 gpu_queue,
@@ -589,7 +588,6 @@ public:
         }
         else
         {
-            std::vector<sycl::event> dependencies;
             uint64_t prod_ranges = 1;
             int *min = cpu_allocator.alloc<int>(group.size()),
                 *max = cpu_allocator.alloc<int>(group.size());
