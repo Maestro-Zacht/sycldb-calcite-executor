@@ -581,24 +581,40 @@ public:
         );
     }
 
-    sycl::event build_key_vals_hash_ht(
+    BuildKeyValsHTKernel *build_key_vals_hash_ht(
         int *ht,
         const bool *flags,
         int ht_len,
         int ht_min_value,
-        const Segment &value_segment,
-        const std::vector<sycl::event> &dependencies) const
+        const Segment &value_segment) const
     {
-        return build_key_vals_ht(
-            on_device ? data_device : data_host,
-            on_device ? value_segment.data_device : value_segment.data_host,
-            flags,
-            nrows,
+        return new BuildKeyValsHTKernel(
             ht,
+            on_device ? data_device : data_host,
+            value_segment.on_device ? value_segment.data_device : value_segment.data_host,
+            flags,
             ht_len,
             ht_min_value,
-            const_cast<sycl::queue &>(on_device ? gpu_queue : cpu_queue),
-            dependencies
+            nrows
+        );
+    }
+
+    FullJoinKernel *full_join_operator(
+        Segment &result_segment,
+        bool *probe_flags,
+        const int *ht,
+        int ht_min_value,
+        int ht_max_value
+    ) const
+    {
+        return new FullJoinKernel(
+            on_device ? data_device : data_host,
+            result_segment.on_device ? result_segment.data_device : result_segment.data_host,
+            probe_flags,
+            ht,
+            ht_min_value,
+            ht_max_value,
+            nrows
         );
     }
 };
@@ -862,24 +878,18 @@ public:
         return ops;
     }
 
-    std::tuple<int *, int, int, std::vector<sycl::event>> build_key_vals_hash_table(
+    std::tuple<int *, int, int, std::vector<KernelBundle>> build_key_vals_hash_table(
         const Column *vals_column,
         bool *flags,
         memory_manager &gpu_allocator,
-        memory_manager &cpu_allocator,
-        const std::vector<sycl::event> &dependencies) const
+        memory_manager &cpu_allocator) const
     {
-        std::vector<sycl::event> events;
-        events.reserve(segments.size());
+        std::vector<KernelBundle> ops;
+        ops.reserve(segments.size());
 
-        int min_value = segments[0].get_min();
-        int max_value = segments[0].get_max();
-
-        for (int i = 1; i < segments.size(); i++)
-        {
-            min_value = std::min(min_value, segments[i].get_min());
-            max_value = std::max(max_value, segments[i].get_max());
-        }
+        auto min_max = get_min_max();
+        int min_value = min_max.first;
+        int max_value = min_max.second;
 
         int ht_len = max_value - min_value + 1;
 
@@ -887,22 +897,26 @@ public:
 
         for (int i = 0; i < segments.size(); i++)
         {
-            events.push_back(
-                segments[i].build_key_vals_hash_ht(
-                    ht,
-                    flags + i * SEGMENT_SIZE,
-                    ht_len,
-                    min_value,
-                    vals_column->segments[i],
-                    dependencies
+            KernelBundle bundle;
+            bundle.add_kernel(
+                KernelData(
+                    KernelType::BuildKeyValsHTKernel,
+                    segments[i].build_key_vals_hash_ht(
+                        ht,
+                        flags + i * SEGMENT_SIZE,
+                        ht_len,
+                        min_value,
+                        vals_column->segments[i]
+                    )
                 )
             );
+            ops.push_back(bundle);
         }
 
-        return { ht, min_value, max_value, events };
+        return { ht, min_value, max_value, ops };
     }
 
-    std::pair<std::vector<sycl::event>, Column> full_join_operation(
+    std::pair<std::vector<KernelBundle>, Column> full_join_operation(
         bool *probe_flags,
         int build_min_value,
         int build_max_value,
@@ -912,10 +926,9 @@ public:
         memory_manager &gpu_allocator,
         memory_manager &cpu_allocator,
         sycl::queue &gpu_queue,
-        sycl::queue &cpu_queue,
-        const std::vector<sycl::event> &dependencies) const
+        sycl::queue &cpu_queue) const
     {
-        std::vector<sycl::event> events;
+        std::vector<KernelBundle> ops;
         uint64_t num_rows = (segments.size() - 1) * SEGMENT_SIZE + segments.back().get_nrows();
         Column new_column(
             num_rows,
@@ -927,32 +940,33 @@ public:
             false
         );
 
-        events.reserve(segments.size());
+        ops.reserve(segments.size());
 
         for (int i = 0; i < segments.size(); i++)
         {
             const Segment &seg = segments[i];
             Segment &new_seg = new_column.segments[i];
+            KernelBundle bundle;
 
-            events.push_back(
-                full_join(
-                    seg.get_data(true),
-                    new_seg.get_data(true),
-                    probe_flags + i * SEGMENT_SIZE,
-                    seg.get_nrows(),
-                    build_ht,
-                    build_min_value,
-                    build_max_value,
-                    gpu_queue,
-                    dependencies
+            bundle.add_kernel(
+                KernelData(
+                    KernelType::FullJoinKernel,
+                    seg.full_join_operator(
+                        new_seg,
+                        probe_flags + i * SEGMENT_SIZE,
+                        build_ht,
+                        build_min_value,
+                        build_max_value
+                    )
                 )
             );
+            ops.push_back(bundle);
 
             new_seg.set_min(group_by_column_min);
             new_seg.set_max(group_by_column_max);
         }
 
-        return { events, new_column };
+        return { ops, new_column };
     }
 };
 

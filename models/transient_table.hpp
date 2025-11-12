@@ -199,6 +199,25 @@ public:
         );
     }
 
+    std::tuple<int *, int, int> build_key_vals_hash_table(int column, memory_manager &gpu_allocator, memory_manager &cpu_allocator)
+    {
+        auto ht_res = current_columns[column]->build_key_vals_hash_table(
+            group_by_column,
+            flags_gpu,
+            gpu_allocator,
+            cpu_allocator
+        );
+
+        std::vector<KernelBundle> ht_kernels = std::get<3>(ht_res);
+        pending_kernels.push_back(ht_kernels);
+
+        return std::make_tuple(
+            std::get<0>(ht_res),
+            std::get<1>(ht_res),
+            std::get<2>(ht_res)
+        );
+    }
+
     void apply_filter(
         const ExprType &expr,
         std::string parent_op,
@@ -738,18 +757,24 @@ public:
         }
         else
         {
-            std::vector<sycl::event> dependencies;
-            auto ht_data = right_table.current_columns[right_column]->build_key_vals_hash_table(
-                right_table.group_by_column,
-                right_table.flags_gpu,
+            auto ht_data = right_table.build_key_vals_hash_table(
+                right_column,
                 gpu_allocator,
-                cpu_allocator,
-                dependencies
+                cpu_allocator
             );
+
+            std::vector<sycl::event> ht_events = right_table.execute_pending_kernels();
+
+            pending_kernels_dependencies.insert(
+                pending_kernels_dependencies.end(),
+                ht_events.begin(),
+                ht_events.end()
+            );
+
             int *ht = std::get<0>(ht_data);
             int build_min_value = std::get<1>(ht_data),
                 build_max_value = std::get<2>(ht_data);
-            std::vector<sycl::event> ht_events = std::get<3>(ht_data);
+
             auto min_max_gb = right_table.group_by_column->get_min_max();
 
             auto join_data = current_columns[left_column]->full_join_operation(
@@ -762,11 +787,10 @@ public:
                 gpu_allocator,
                 cpu_allocator,
                 gpu_queue,
-                cpu_queue,
-                ht_events
+                cpu_queue
             );
 
-            // events = join_data.first;
+            pending_kernels.push_back(join_data.first);
 
             uint64_t group_by_col_index = current_columns.size() + right_table.group_by_column_index;
 

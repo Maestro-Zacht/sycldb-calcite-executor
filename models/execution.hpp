@@ -18,7 +18,9 @@ enum class KernelType : uint8_t
     PerformOperationKernelLiteralFirst,
     PerformOperationKernelLiteralSecond,
     BuildKeysHTKernel,
-    FilterJoinKernel
+    FilterJoinKernel,
+    BuildKeyValsHTKernel,
+    FullJoinKernel
 };
 
 class KernelData
@@ -150,6 +152,34 @@ public:
         case KernelType::FilterJoinKernel:
         {
             FilterJoinKernel *kernel = static_cast<FilterJoinKernel *>(kernel_def.get());
+            return queue.submit(
+                [&](sycl::handler &cgh)
+                {
+                    cgh.depends_on(dependencies);
+                    cgh.parallel_for(
+                        kernel->get_col_len(),
+                        *kernel
+                    );
+                }
+            );
+        }
+        case KernelType::BuildKeyValsHTKernel:
+        {
+            BuildKeyValsHTKernel *kernel = static_cast<BuildKeyValsHTKernel *>(kernel_def.get());
+            return queue.submit(
+                [&](sycl::handler &cgh)
+                {
+                    cgh.depends_on(dependencies);
+                    cgh.parallel_for(
+                        kernel->get_col_len(),
+                        *kernel
+                    );
+                }
+            );
+        }
+        case KernelType::FullJoinKernel:
+        {
+            FullJoinKernel *kernel = static_cast<FullJoinKernel *>(kernel_def.get());
             return queue.submit(
                 [&](sycl::handler &cgh)
                 {
