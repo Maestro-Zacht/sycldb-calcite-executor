@@ -4,6 +4,7 @@
 
 #include "../operations/memory_manager.hpp"
 #include "types.hpp"
+#include "common.hpp"
 
 #define PRINT_JOIN_DEBUG_INFO 0
 
@@ -13,14 +14,31 @@ inline T HASH(T X, T Y, T Z)
     return ((X - Z) % Y);
 }
 
-template <typename T>
+class BuildKeysHTKernel : public KernelDefinition
+{
+private:
+    bool *ht;
+    const int *col;
+    const bool *flags;
+    int ht_len, ht_min_value;
+public:
+    BuildKeysHTKernel(bool *hash_table, const int *column, const bool *flags, int ht_length, int ht_min, int col_len)
+        : KernelDefinition(col_len), ht(hash_table), col(column), flags(flags), ht_len(ht_length), ht_min_value(ht_min)
+    {}
+
+    void operator()(sycl::id<1> idx) const
+    {
+        ht[HASH(col[idx], ht_len, ht_min_value)] = flags[idx];
+    }
+};
+
 sycl::event build_keys_ht(
-    const T col[],
+    const int col[],
     const bool flags[],
     int col_len,
     bool ht[],
-    T ht_len,
-    T ht_min_value,
+    int ht_len,
+    int ht_min_value,
     sycl::queue &queue,
     const std::vector<sycl::event> &dependencies)
 {
@@ -73,14 +91,48 @@ sycl::event build_key_vals_ht(
     );
 }
 
-template <typename T>
+class FilterJoinKernel : public KernelDefinition
+{
+private:
+    const int *probe_col;
+    bool *probe_col_flags;
+    const bool *build_ht;
+    int build_min_value, build_max_value, ht_len;
+public:
+    FilterJoinKernel(
+        const int *probe_column,
+        bool *probe_column_flags,
+        const bool *build_hash_table,
+        int build_min,
+        int build_max,
+        int col_len)
+        : KernelDefinition(col_len), probe_col(probe_column), probe_col_flags(probe_column_flags), build_ht(build_hash_table),
+        build_min_value(build_min), build_max_value(build_max)
+    {
+        ht_len = build_max_value - build_min_value + 1;
+    }
+
+    void operator()(sycl::id<1> idx) const
+    {
+        auto i = idx[0];
+        if (
+            probe_col_flags[i] &&
+            probe_col[i] >= build_min_value &&
+            probe_col[i] <= build_max_value
+            )
+            probe_col_flags[i] = build_ht[HASH(probe_col[i], ht_len, build_min_value)];
+        else
+            probe_col_flags[i] = false;
+    }
+};
+
 sycl::event filter_join(
-    const T *probe_col,
+    const int *probe_col,
     bool *probe_col_flags,
     int probe_col_len,
     const bool *build_ht,
-    T build_min_value,
-    T build_max_value,
+    int build_min_value,
+    int build_max_value,
     sycl::queue &queue,
     const std::vector<sycl::event> &dependencies)
 {

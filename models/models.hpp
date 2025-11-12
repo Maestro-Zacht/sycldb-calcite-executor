@@ -548,42 +548,36 @@ public:
         );
     }
 
-    sycl::event build_keys_hash_table(
+    BuildKeysHTKernel *build_keys_hash_table(
         bool *ht,
         const bool *flags,
         int ht_len,
-        int ht_min_value,
-        const std::vector<sycl::event> &dependencies
+        int ht_min_value
     ) const
     {
-        return build_keys_ht(
+        return new BuildKeysHTKernel(
+            ht,
             on_device ? data_device : data_host,
             flags,
-            nrows,
-            ht,
             ht_len,
             ht_min_value,
-            const_cast<sycl::queue &>(on_device ? gpu_queue : cpu_queue),
-            dependencies
+            nrows
         );
     }
 
-    sycl::event semi_join_operator(
+    FilterJoinKernel *semi_join_operator(
         bool *probe_flags,
         int build_min_value,
         int build_max_value,
-        const bool *build_ht,
-        const std::vector<sycl::event> &dependencies) const
+        const bool *build_ht) const
     {
-        return filter_join(
+        return new FilterJoinKernel(
             on_device ? data_device : data_host,
             probe_flags,
-            nrows,
             build_ht,
             build_min_value,
             build_max_value,
-            const_cast<sycl::queue &>(on_device ? gpu_queue : cpu_queue),
-            dependencies
+            nrows
         );
     }
 
@@ -806,10 +800,10 @@ public:
         return total_size;
     }
 
-    std::tuple<bool *, int, int, std::vector<sycl::event>> build_keys_hash_table(bool *flags, memory_manager &gpu_allocator, memory_manager &cpu_allocator, const std::vector<sycl::event> &dependencies) const
+    std::tuple<bool *, int, int, std::vector<KernelBundle>> build_keys_hash_table(bool *flags, memory_manager &gpu_allocator, memory_manager &cpu_allocator) const
     {
-        std::vector<sycl::event> events;
-        events.reserve(segments.size());
+        std::vector<KernelBundle> ops;
+        ops.reserve(segments.size());
 
         auto min_max = get_min_max();
         int min_value = min_max.first;
@@ -821,44 +815,51 @@ public:
 
         for (int i = 0; i < segments.size(); i++)
         {
-            events.push_back(
-                segments[i].build_keys_hash_table(
-                    ht,
-                    flags + i * SEGMENT_SIZE,
-                    ht_len,
-                    min_value,
-                    dependencies
+            KernelBundle bundle;
+            bundle.add_kernel(
+                KernelData(
+                    KernelType::BuildKeysHTKernel,
+                    segments[i].build_keys_hash_table(
+                        ht,
+                        flags + i * SEGMENT_SIZE,
+                        ht_len,
+                        min_value
+                    )
                 )
             );
+            ops.push_back(bundle);
         }
 
-        return { ht, min_value, max_value, events };
+        return { ht, min_value, max_value, ops };
     }
 
-    std::vector<sycl::event> semi_join(
+    std::vector<KernelBundle> semi_join(
         bool *probe_flags,
         int build_min_value,
         int build_max_value,
-        const bool *build_ht,
-        const std::vector<sycl::event> &dependencies)
+        const bool *build_ht)
     {
-        std::vector<sycl::event> events;
-        events.reserve(segments.size());
+        std::vector<KernelBundle> ops;
+        ops.reserve(segments.size());
 
         for (int i = 0; i < segments.size(); i++)
         {
-            events.push_back(
-                segments[i].semi_join_operator(
-                    probe_flags + i * SEGMENT_SIZE,
-                    build_min_value,
-                    build_max_value,
-                    build_ht,
-                    dependencies
+            KernelBundle bundle;
+            bundle.add_kernel(
+                KernelData(
+                    KernelType::FilterJoinKernel,
+                    segments[i].semi_join_operator(
+                        probe_flags + i * SEGMENT_SIZE,
+                        build_min_value,
+                        build_max_value,
+                        build_ht
+                    )
                 )
             );
+            ops.push_back(bundle);
         }
 
-        return events;
+        return ops;
     }
 
     std::tuple<int *, int, int, std::vector<sycl::event>> build_key_vals_hash_table(

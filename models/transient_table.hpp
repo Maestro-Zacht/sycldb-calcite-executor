@@ -63,7 +63,7 @@ private:
         std::vector<sycl::event> events;
 
         if (pending_kernels.size() == 0)
-            return events;
+            return pending_kernels_dependencies;
 
         for (const auto &phases : pending_kernels)
         {
@@ -179,6 +179,24 @@ public:
         }
 
         return out;
+    }
+
+    std::tuple<bool *, int, int> build_keys_hash_table(int column, memory_manager &gpu_allocator, memory_manager &cpu_allocator)
+    {
+        auto ht_res = current_columns[column]->build_keys_hash_table(
+            flags_gpu,
+            gpu_allocator,
+            cpu_allocator
+        );
+
+        std::vector<KernelBundle> ht_kernels = std::get<3>(ht_res);
+        pending_kernels.push_back(ht_kernels);
+
+        return std::make_tuple(
+            std::get<0>(ht_res),
+            std::get<1>(ht_res),
+            std::get<2>(ht_res)
+        );
     }
 
     void apply_filter(
@@ -669,14 +687,12 @@ public:
         return events;
     }
 
-    std::vector<sycl::event> apply_join(
-        const TransientTable &right_table,
+    void apply_join(
+        TransientTable &right_table,
         const RelNode &rel,
         memory_manager &gpu_allocator,
-        memory_manager &cpu_allocator,
-        const std::vector<sycl::event> &dependencies)
+        memory_manager &cpu_allocator)
     {
-        std::vector<sycl::event> events;
         int left_column = rel.condition.operands[0].input,
             right_column = rel.condition.operands[1].input - current_columns.size();
 
@@ -691,23 +707,30 @@ public:
 
         if (rel.joinType == "semi")
         {
-            auto ht_data = right_table.current_columns[right_column]->build_keys_hash_table(
-                right_table.flags_gpu,
+            auto ht_data = right_table.build_keys_hash_table(
+                right_column,
                 gpu_allocator,
-                cpu_allocator,
-                dependencies
+                cpu_allocator
             );
+            std::vector<sycl::event> ht_events = right_table.execute_pending_kernels();
+
+            pending_kernels_dependencies.insert(
+                pending_kernels_dependencies.end(),
+                ht_events.begin(),
+                ht_events.end()
+            );
+
             bool *ht = std::get<0>(ht_data);
             int build_min_value = std::get<1>(ht_data),
                 build_max_value = std::get<2>(ht_data);
-            std::vector<sycl::event> ht_events = std::get<3>(ht_data);
 
-            events = current_columns[left_column]->semi_join(
-                flags_gpu,
-                build_min_value,
-                build_max_value,
-                ht,
-                ht_events
+            pending_kernels.push_back(
+                current_columns[left_column]->semi_join(
+                    flags_gpu,
+                    build_min_value,
+                    build_max_value,
+                    ht
+                )
             );
 
             for (int i = 0; i < right_table.current_columns.size(); i++)
@@ -715,6 +738,7 @@ public:
         }
         else
         {
+            std::vector<sycl::event> dependencies;
             auto ht_data = right_table.current_columns[right_column]->build_key_vals_hash_table(
                 right_table.group_by_column,
                 right_table.flags_gpu,
@@ -742,7 +766,7 @@ public:
                 ht_events
             );
 
-            events = join_data.first;
+            // events = join_data.first;
 
             uint64_t group_by_col_index = current_columns.size() + right_table.group_by_column_index;
 
@@ -753,7 +777,5 @@ public:
 
             current_columns[group_by_col_index] = &materialized_columns[materialized_columns.size() - 1];
         }
-
-        return events;
     }
 };

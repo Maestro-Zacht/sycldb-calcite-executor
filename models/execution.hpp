@@ -6,6 +6,7 @@
 #include "../kernels/selection.hpp"
 #include "../kernels/projection.hpp"
 #include "../kernels/aggregation.hpp"
+#include "../kernels/join.hpp"
 
 enum class KernelType : uint8_t
 {
@@ -15,7 +16,9 @@ enum class KernelType : uint8_t
     FillKernel,
     PerformOperationKernelColumns,
     PerformOperationKernelLiteralFirst,
-    PerformOperationKernelLiteralSecond
+    PerformOperationKernelLiteralSecond,
+    BuildKeysHTKernel,
+    FilterJoinKernel
 };
 
 class KernelData
@@ -119,6 +122,34 @@ public:
         case KernelType::PerformOperationKernelLiteralSecond:
         {
             PerformOperationKernelLiteralSecond *kernel = static_cast<PerformOperationKernelLiteralSecond *>(kernel_def.get());
+            return queue.submit(
+                [&](sycl::handler &cgh)
+                {
+                    cgh.depends_on(dependencies);
+                    cgh.parallel_for(
+                        kernel->get_col_len(),
+                        *kernel
+                    );
+                }
+            );
+        }
+        case KernelType::BuildKeysHTKernel:
+        {
+            BuildKeysHTKernel *kernel = static_cast<BuildKeysHTKernel *>(kernel_def.get());
+            return queue.submit(
+                [&](sycl::handler &cgh)
+                {
+                    cgh.depends_on(dependencies);
+                    cgh.parallel_for(
+                        kernel->get_col_len(),
+                        *kernel
+                    );
+                }
+            );
+        }
+        case KernelType::FilterJoinKernel:
+        {
+            FilterJoinKernel *kernel = static_cast<FilterJoinKernel *>(kernel_def.get());
             return queue.submit(
                 [&](sycl::handler &cgh)
                 {

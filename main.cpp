@@ -772,16 +772,11 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
             int left_table_idx = output_table[rel.inputs[0]];
             int right_table_idx = output_table[rel.inputs[1]];
 
-            std::vector<sycl::event> join_dependencies;
-            join_dependencies.insert(join_dependencies.end(), dependencies[rel.inputs[0]].begin(), dependencies[rel.inputs[0]].end());
-            join_dependencies.insert(join_dependencies.end(), dependencies[rel.inputs[1]].begin(), dependencies[rel.inputs[1]].end());
-
-            dependencies[id] = transient_tables[left_table_idx].apply_join(
+            transient_tables[left_table_idx].apply_join(
                 transient_tables[right_table_idx],
                 rel,
                 gpu_allocator,
-                cpu_allocator,
-                join_dependencies
+                cpu_allocator
             );
             output_table[id] = left_table_idx;
 
