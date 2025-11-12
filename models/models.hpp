@@ -535,14 +535,14 @@ public:
 
     sycl::event aggregate_operator(
         const bool *flags,
-        sycl::_V1::detail::reduction_impl<uint64_t, sycl::_V1::plus<void>, 0, 1UL, false, uint64_t *> agg,
+        uint64_t *agg_res,
         const std::vector<sycl::event> &dependencies) const
     {
         return aggregate_operation(
             on_device ? data_device : data_host,
             flags,
             nrows,
-            agg,
+            agg_res,
             const_cast<sycl::queue &>(on_device ? gpu_queue : cpu_queue),
             dependencies
         );

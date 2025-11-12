@@ -558,15 +558,13 @@ public:
 
             events.reserve(input_segments.size());
 
-            auto agg_op = sycl::reduction(final_result, sycl::plus<>());
-
             for (int i = 0; i < input_segments.size(); i++)
             {
                 const Segment &input_segment = input_segments[i];
                 events.push_back(
                     input_segment.aggregate_operator(
                         (input_segment.is_on_device() ? flags_gpu : flags_host) + i * SEGMENT_SIZE,
-                        agg_op,
+                        final_result,
                         dependencies
                     )
                 );

@@ -213,7 +213,7 @@ sycl::event aggregate_operation(
     const T a[],
     const bool flags[],
     int size,
-    sycl::_V1::detail::reduction_impl<uint64_t, sycl::_V1::plus<void>, 0, 1UL, false, uint64_t *> agg,
+    uint64_t *agg_res,
     sycl::queue &queue,
     const std::vector<sycl::event> &dependencies)
 {
@@ -236,11 +236,20 @@ sycl::event aggregate_operation(
             cgh.depends_on(dependencies);
             cgh.parallel_for(
                 sycl::range<1>(size),
-                agg,
-                [=](sycl::id<1> idx, auto &sum)
+                // agg,
+                [=](sycl::id<1> idx)
                 {
                     if (flags[idx])
-                        sum.combine(a[idx]);
+                    {
+                        // sum.combine(a[idx]);
+                        sycl::atomic_ref<
+                            uint64_t,
+                            sycl::memory_order::relaxed,
+                            sycl::memory_scope::device,
+                            sycl::access::address_space::global_space
+                        > sum_obj(*agg_res);
+                        sum_obj.fetch_add(a[idx]);
+                    }
                 }
             );
         }
