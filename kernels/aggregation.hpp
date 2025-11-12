@@ -208,13 +208,12 @@ sycl::event perform_operation(
     );
 }
 
-template <typename T, typename U>
+template <typename T>
 sycl::event aggregate_operation(
-    U *result,
     const T a[],
     const bool flags[],
     int size,
-    const std::string &op,
+    sycl::_V1::detail::reduction_impl<uint64_t, sycl::_V1::plus<void>, 0, 1UL, false, uint64_t *> agg,
     sycl::queue &queue,
     const std::vector<sycl::event> &dependencies)
 {
@@ -222,7 +221,6 @@ sycl::event aggregate_operation(
     auto start = std::chrono::high_resolution_clock::now();
     #endif
 
-    // auto e1 = queue.memset(result, 0, sizeof(U));
 
     #if PRINT_AGGREGATE_DEBUG_INFO
     auto end = std::chrono::high_resolution_clock::now();
@@ -236,10 +234,9 @@ sycl::event aggregate_operation(
         [&](sycl::handler &cgh)
         {
             cgh.depends_on(dependencies);
-            // cgh.depends_on(e1);
             cgh.parallel_for(
                 sycl::range<1>(size),
-                sycl::reduction(result, sycl::plus<>()),
+                agg,
                 [=](sycl::id<1> idx, auto &sum)
                 {
                     if (flags[idx])

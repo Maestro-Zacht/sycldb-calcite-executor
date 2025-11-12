@@ -534,17 +534,15 @@ public:
     }
 
     sycl::event aggregate_operator(
-        uint64_t *result,
         const bool *flags,
-        const std::string &op,
+        sycl::_V1::detail::reduction_impl<uint64_t, sycl::_V1::plus<void>, 0, 1UL, false, uint64_t *> agg,
         const std::vector<sycl::event> &dependencies) const
     {
         return aggregate_operation(
-            result,
             on_device ? data_device : data_host,
             flags,
             nrows,
-            op,
+            agg,
             const_cast<sycl::queue &>(on_device ? gpu_queue : cpu_queue),
             dependencies
         );
@@ -968,7 +966,7 @@ public:
     Table(const std::string table_name, sycl::queue &gpu_queue, sycl::queue &cpu_queue)
         : table_name(table_name)
     {
-        int col_number = table_column_numbers[table_name];
+        int col_number = table_column_numbers[table_name], *content;
         columns.reserve(col_number);
 
         for (int i = 0; i < col_number; i++)
@@ -984,7 +982,10 @@ public:
             uint64_t num_entries = static_cast<uint64_t>(fileSize / sizeof(int));
 
             if (i == 0)
+            {
                 nrows = num_entries;
+                content = sycl::malloc_host<int>(nrows, cpu_queue);
+            }
 
             if (num_entries != nrows)
             {
@@ -995,17 +996,13 @@ public:
             else
             {
                 colData.seekg(0, std::ios::beg);
-
-                int *content = new int[num_entries];
                 colData.read((char *)content, num_entries * sizeof(int));
-
                 columns.emplace_back(content, num_entries, gpu_queue, cpu_queue);
-
-                delete[] content;
             }
 
             colData.close();
         }
+        sycl::free(content, cpu_queue);
     }
 
     uint64_t get_nrows() const { return nrows; }

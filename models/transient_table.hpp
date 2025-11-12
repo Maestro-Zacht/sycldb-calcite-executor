@@ -518,42 +518,23 @@ public:
 
             const std::vector<Segment> &input_segments = current_columns[agg.operands[0]]->get_segments();
 
-            uint64_t *temp_results = gpu_allocator.alloc<uint64_t>(input_segments.size());
+            uint64_t *final_result = result_column.get_segments()[0].get_aggregate_data(true);
 
-            events.reserve(input_segments.size() + 1);
+            events.reserve(input_segments.size());
+
+            auto agg_op = sycl::reduction(final_result, sycl::plus<>());
 
             for (int i = 0; i < input_segments.size(); i++)
             {
                 const Segment &input_segment = input_segments[i];
                 events.push_back(
                     input_segment.aggregate_operator(
-                        temp_results + i,
                         (input_segment.is_on_device() ? flags_gpu : flags_host) + i * SEGMENT_SIZE,
-                        agg.agg,
+                        agg_op,
                         dependencies
                     )
                 );
             }
-
-            uint64_t *final_result = result_column.get_segments()[0].get_aggregate_data(true);
-
-            auto e = gpu_queue.submit(
-                [&](sycl::handler &cgh)
-                {
-                    cgh.depends_on(events);
-                    cgh.parallel_for(
-                        sycl::range<1>(input_segments.size()),
-                        sycl::reduction(final_result, sycl::plus<>()),
-                        [=](sycl::id<1> idx, auto &sum)
-                        {
-                            sum.combine(temp_results[idx]);
-                        }
-                    );
-                }
-            );
-
-            events.clear();
-            events.push_back(e);
 
             bool *new_gpu_flags = gpu_allocator.alloc<bool>(1),
                 *new_cpu_flags = cpu_allocator.alloc<bool>(1);
