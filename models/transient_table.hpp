@@ -56,53 +56,6 @@ private:
     uint64_t group_by_column_index;
     std::vector<std::vector<KernelBundle>> pending_kernels;
     std::vector<sycl::event> pending_kernels_dependencies;
-
-    std::vector<sycl::event> execute_pending_kernels()
-    {
-        uint64_t segment_num = nrows / SEGMENT_SIZE + (nrows % SEGMENT_SIZE > 0 ? 1 : 0);
-        std::vector<sycl::event> events;
-
-        if (pending_kernels.size() == 0)
-            return pending_kernels_dependencies;
-
-        for (const auto &phases : pending_kernels)
-        {
-            if (phases.size() != segment_num)
-            {
-                std::cerr << "Pending kernels segment number mismatch: expected " << segment_num << ", got " << phases.size() << std::endl;
-                throw std::runtime_error("Pending kernels segment number mismatch.");
-            }
-        }
-
-        for (uint64_t segment_index = 0; segment_index < segment_num; segment_index++)
-        {
-            std::vector<sycl::event> deps = pending_kernels_dependencies;
-            sycl::event e;
-
-            #if USE_FUSION
-            fw_gpu.start_fusion();
-            #endif
-
-            for (const auto &phases : pending_kernels)
-            {
-                const KernelBundle &bundle = phases[segment_index];
-                e = bundle.execute(gpu_queue, deps);
-                deps.clear();
-                deps.push_back(e);
-            }
-
-            #if USE_FUSION
-            fw_gpu.complete_fusion(sycl::ext::codeplay::experimental::property::no_barriers {});
-            #endif
-
-            events.push_back(e);
-        }
-
-        pending_kernels.clear();
-        pending_kernels_dependencies.clear();
-
-        return events;
-    }
 public:
     TransientTable(Table *base_table,
         sycl::queue &gpu_queue,
@@ -179,6 +132,53 @@ public:
         }
 
         return out;
+    }
+
+    std::vector<sycl::event> execute_pending_kernels()
+    {
+        uint64_t segment_num = nrows / SEGMENT_SIZE + (nrows % SEGMENT_SIZE > 0 ? 1 : 0);
+        std::vector<sycl::event> events;
+
+        if (pending_kernels.size() == 0)
+            return pending_kernels_dependencies;
+
+        for (const auto &phases : pending_kernels)
+        {
+            if (phases.size() != segment_num)
+            {
+                std::cerr << "Pending kernels segment number mismatch: expected " << segment_num << ", got " << phases.size() << std::endl;
+                throw std::runtime_error("Pending kernels segment number mismatch.");
+            }
+        }
+
+        for (uint64_t segment_index = 0; segment_index < segment_num; segment_index++)
+        {
+            std::vector<sycl::event> deps = pending_kernels_dependencies;
+            sycl::event e;
+
+            #if USE_FUSION
+            fw_gpu.start_fusion();
+            #endif
+
+            for (const auto &phases : pending_kernels)
+            {
+                const KernelBundle &bundle = phases[segment_index];
+                e = bundle.execute(gpu_queue, deps);
+                deps.clear();
+                deps.push_back(e);
+            }
+
+            #if USE_FUSION
+            fw_gpu.complete_fusion(sycl::ext::codeplay::experimental::property::no_barriers {});
+            #endif
+
+            events.push_back(e);
+        }
+
+        pending_kernels.clear();
+        pending_kernels_dependencies.clear();
+
+        return events;
     }
 
     std::tuple<bool *, int, int> build_keys_hash_table(int column, memory_manager &gpu_allocator, memory_manager &cpu_allocator)

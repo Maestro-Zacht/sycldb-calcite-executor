@@ -627,7 +627,6 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
     ExecutionInfo exec_info = parse_execution_info(result);
     std::vector<int> output_table(result.rels.size(), -1);
     std::vector<TransientTable> transient_tables;
-    std::map<int, std::vector<sycl::event>> dependencies; // used to track dependencies between operations
 
     for (const RelNode &rel : result.rels)
     {
@@ -689,7 +688,6 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
         switch (rel.relOp)
         {
         case RelNodeType::TABLE_SCAN:
-            dependencies[id] = {};
             // #if USE_FUSION
             // if (rel.tables[1] == "lineorder")
             // {
@@ -791,7 +789,6 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
         case RelNodeType::SORT:
         {
             // Sort is done in bash
-            dependencies[id] = dependencies[id - 1];
             output_table[id] = output_table[id - 1];
             break;
         }
@@ -806,6 +803,7 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
         // }
     }
 
+    transient_tables[output_table[result.rels.size() - 1]].execute_pending_kernels();
     // std::cout << "Waiting for all operations to complete." << std::endl;
 
     gpu_queue.wait();
