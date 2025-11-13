@@ -36,9 +36,12 @@ memory_manager::memory_manager(sycl::queue &queue, uint64_t size, bool alloc_on_
 memory_manager::~memory_manager()
 {
     #if MEMORY_MANAGER_DEBUG_INFO
-    std::cout << "Freeing memory region of size " << size << " bytes. Allocated: " << allocated << " bytes." << std::endl;
+    std::cout << "Freeing memory region of size " << size << " bytes. Allocated: " << allocated << " bytes. Address ranges: " << static_cast<void *>(memory_region) << " - " << static_cast<void *>(memory_region + size) << std::endl;
     #endif
     sycl::free(memory_region, queue);
+    #if MEMORY_MANAGER_DEBUG_INFO
+    std::cout << "Memory region freed." << std::endl;
+    #endif
 }
 
 template <typename T>

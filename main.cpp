@@ -659,7 +659,17 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
             return std::chrono::duration<double, std::milli>::zero();
         }
 
-        TransientTable &t = transient_tables.emplace_back(table_ptr, gpu_queue, cpu_queue, fw_gpu, fw_cpu, gpu_allocator, cpu_allocator);
+        TransientTable &t = transient_tables.emplace_back(
+            table_ptr,
+            gpu_queue,
+            cpu_queue,
+            #if USE_FUSION
+            fw_gpu,
+            fw_cpu,
+            #endif
+            gpu_allocator,
+            cpu_allocator
+        );
 
         if (exec_info.group_by_columns.find(rel.tables[1]) != exec_info.group_by_columns.end())
             t.set_group_by_column(exec_info.group_by_columns[rel.tables[1]]);
@@ -688,15 +698,6 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
         switch (rel.relOp)
         {
         case RelNodeType::TABLE_SCAN:
-            // #if USE_FUSION
-            // if (rel.tables[1] == "lineorder")
-            // {
-            //     fw_gpu.start_fusion();
-            //     fw_cpu.start_fusion();
-            //     fusion_active = true;
-            // }
-            // #endif
-
             break;
         case RelNodeType::FILTER:
         {
@@ -803,16 +804,20 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
         // }
     }
 
-    transient_tables[output_table[result.rels.size() - 1]].execute_pending_kernels();
-    // std::cout << "Waiting for all operations to complete." << std::endl;
+    std::vector<sycl::event> events = transient_tables[output_table[result.rels.size() - 1]].execute_pending_kernels();
+    // std::cout << "Waiting for all operations to complete. Event list len: " << events.size() << std::endl;
+
+    // auto pre_wait = std::chrono::high_resolution_clock::now();
 
     gpu_queue.wait();
     cpu_queue.wait();
+    sycl::event::wait(events);
 
     auto end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double, std::milli> duration = end - start;
+    // std::chrono::duration<double, std::milli> wait_time = end - pre_wait;
 
-    // std::cout << "All operations completed." << std::endl;
+    // std::cout << "All operations completed in " << duration.count() << " ms\nTime waiting: " << wait_time.count() << " ms" << std::endl;
 
     gpu_queue.single_task<EndTimer2>([=]() {}).wait();
     cpu_queue.single_task<EndTimer3>([=]() {}).wait();
@@ -971,6 +976,10 @@ int data_driven_operator_replacement(int argc, char **argv)
         std::cerr << "Unknown exception" << std::endl;
     }
 
+    #if not PERFORMANCE_MEASUREMENT_ACTIVE
+    std::cout << "Finished execution." << std::endl;
+    #endif
+
     return 0;
 }
 
@@ -1053,7 +1062,12 @@ int test()
 
 int main(int argc, char **argv)
 {
-    // return test();
-    // return normal_execution(argc, argv);
-    return data_driven_operator_replacement(argc, argv);
+    // r = test();
+    // r = normal_execution(argc, argv);
+    int r = data_driven_operator_replacement(argc, argv);
+
+    #if not PERFORMANCE_MEASUREMENT_ACTIVE
+    std::cout << "Return code: " << r << std::endl;
+    #endif
+    return r;
 }

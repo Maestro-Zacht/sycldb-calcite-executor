@@ -196,9 +196,16 @@ public:
         if (!is_materialized)
         {
             if (data_host != nullptr)
+            {
+                // std::cout << "Freeing data_host " << data_host << std::endl;
                 sycl::free(data_host, cpu_queue);
+            }
             if (data_device != nullptr)
+            {
+                // std::cout << "Freeing data_device " << data_device << std::endl;
                 sycl::free(data_device, gpu_queue);
+            }
+            // std::cout << "Segment free completed" << std::endl;
         }
     }
 
@@ -614,6 +621,33 @@ public:
             nrows
         );
     }
+
+    GroupByAggregateKernel *group_by_aggregate_operator(
+        const int **contents,
+        const int *max,
+        const int *min,
+        const bool *flags,
+        uint64_t *agg_res,
+        int group_size,
+        int **results,
+        unsigned *result_flags,
+        uint64_t prod_ranges
+    ) const
+    {
+        return new GroupByAggregateKernel(
+            contents,
+            on_device ? data_device : data_host,
+            max,
+            min,
+            flags,
+            group_size,
+            nrows,
+            results,
+            agg_res,
+            result_flags,
+            prod_ranges
+        );
+    }
 };
 
 
@@ -1015,6 +1049,11 @@ public:
             colData.close();
         }
         sycl::free(content, cpu_queue);
+    }
+
+    ~Table()
+    {
+        std::cout << "Table " << table_name << " destroyed." << std::endl;
     }
 
     uint64_t get_nrows() const { return nrows; }

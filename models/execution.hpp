@@ -21,7 +21,8 @@ enum class KernelType : uint8_t
     FilterJoinKernel,
     BuildKeyValsHTKernel,
     FullJoinKernel,
-    AggregateOperationKernel
+    AggregateOperationKernel,
+    GroupByAggregateKernel
 };
 
 class KernelData
@@ -195,6 +196,20 @@ public:
         case KernelType::AggregateOperationKernel:
         {
             AggregateOperationKernel *kernel = static_cast<AggregateOperationKernel *>(kernel_def.get());
+            return queue.submit(
+                [&](sycl::handler &cgh)
+                {
+                    cgh.depends_on(dependencies);
+                    cgh.parallel_for(
+                        kernel->get_col_len(),
+                        *kernel
+                    );
+                }
+            );
+        }
+        case KernelType::GroupByAggregateKernel:
+        {
+            GroupByAggregateKernel *kernel = static_cast<GroupByAggregateKernel *>(kernel_def.get());
             return queue.submit(
                 [&](sycl::handler &cgh)
                 {

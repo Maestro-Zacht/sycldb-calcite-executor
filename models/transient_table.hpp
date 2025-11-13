@@ -151,6 +151,8 @@ public:
             }
         }
 
+        events.reserve(segment_num);
+
         for (uint64_t segment_index = 0; segment_index < segment_num; segment_index++)
         {
             std::vector<sycl::event> deps = pending_kernels_dependencies;
@@ -531,13 +533,13 @@ public:
         current_columns = new_columns;
     }
 
-    std::vector<sycl::event> apply_aggregate(
+    void apply_aggregate(
         const AggType &agg,
         const std::vector<long> &group,
         memory_manager &gpu_allocator,
         memory_manager &cpu_allocator)
     {
-        std::vector<sycl::event> events;
+        std::vector<KernelBundle> agg_bundles;
 
         if (group.size() == 0)
         {
@@ -550,7 +552,6 @@ public:
                 true,
                 true
             );
-            std::vector<KernelBundle> agg_bundles;
 
             const std::vector<Segment> &input_segments = current_columns[agg.operands[0]]->get_segments();
 
@@ -576,12 +577,12 @@ public:
 
             pending_kernels.push_back(agg_bundles);
 
-            execute_pending_kernels();
+            pending_kernels_dependencies = execute_pending_kernels();
 
             bool *new_gpu_flags = gpu_allocator.alloc<bool>(1),
                 *new_cpu_flags = cpu_allocator.alloc<bool>(1);
 
-            events.push_back(gpu_queue.fill<bool>(new_gpu_flags, true, 1));
+            pending_kernels_dependencies.push_back(gpu_queue.fill<bool>(new_gpu_flags, true, 1));
             new_cpu_flags[0] = true;
 
             flags_gpu = new_gpu_flags;
@@ -594,7 +595,6 @@ public:
         }
         else
         {
-            std::vector<sycl::event> dependencies = execute_pending_kernels();
             uint64_t prod_ranges = 1;
             int *min = cpu_allocator.alloc<int>(group.size()),
                 *max = cpu_allocator.alloc<int>(group.size());
@@ -618,48 +618,52 @@ public:
             for (int i = 0; i < group.size(); i++)
                 results[i] = gpu_allocator.alloc<int>(prod_ranges);
 
-            int num_segments = current_columns[agg.operands[0]]->get_segments().size();
+            const std::vector<Segment> &agg_segments = current_columns[agg.operands[0]]->get_segments();
 
-            events.reserve(num_segments);
+            agg_bundles.reserve(agg_segments.size());
 
-            for (int i = 0; i < num_segments; i++)
+            for (int i = 0; i < agg_segments.size(); i++)
             {
                 for (int j = 0; j < group.size(); j++)
                 {
                     const Segment &segment = current_columns[group[j]]->get_segments()[i];
                     contents[j] = segment.get_data(true);
                 }
-                const Segment &agg_segment = current_columns[agg.operands[0]]->get_segments()[i];
+                const Segment &agg_segment = agg_segments[i];
 
-                auto e = group_by_aggregate(
-                    contents,
-                    agg_segment.get_data(true),
-                    max,
-                    min,
-                    flags_gpu + i * SEGMENT_SIZE,
-                    agg_segment.get_nrows(),
-                    group.size(),
-                    results,
-                    aggregate_result,
-                    temp_flags,
-                    prod_ranges,
-                    agg.agg,
-                    gpu_queue,
-                    dependencies
+                KernelBundle bundle;
+                bundle.add_kernel(
+                    KernelData(
+                        KernelType::GroupByAggregateKernel,
+                        agg_segment.group_by_aggregate_operator(
+                            contents,
+                            max,
+                            min,
+                            (agg_segment.is_on_device() ? flags_gpu : flags_host) + i * SEGMENT_SIZE,
+                            aggregate_result,
+                            group.size(),
+                            results,
+                            temp_flags,
+                            prod_ranges
+                        )
+                    )
                 );
-                events.push_back(e);
-                e.wait();
+                agg_bundles.push_back(bundle);
             }
+
+            pending_kernels.push_back(agg_bundles);
+
+            pending_kernels_dependencies = execute_pending_kernels();
 
             auto e1 = gpu_queue.submit(
                 [&](sycl::handler &cgh)
                 {
-                    cgh.depends_on(events);
+                    cgh.depends_on(pending_kernels_dependencies);
                     cgh.parallel_for(
                         prod_ranges,
                         [=](sycl::id<1> idx)
                         {
-                            new_gpu_flags[idx] = temp_flags[idx] != 0;
+                            new_gpu_flags[idx[0]] = temp_flags[idx[0]] != 0;
                         }
                     );
                 }
@@ -672,8 +676,8 @@ public:
                 e1
             );
 
-            events.clear();
-            events.push_back(e2);
+            pending_kernels_dependencies.clear();
+            pending_kernels_dependencies.push_back(e2);
 
             current_columns.clear();
 
@@ -707,8 +711,6 @@ public:
 
             nrows = prod_ranges;
         }
-
-        return events;
     }
 
     void apply_join(
