@@ -2,6 +2,8 @@
 
 #include <sycl/sycl.hpp>
 
+#define MEMORY_MANAGER_DEBUG_INFO 0
+
 class memory_manager
 {
 private:
@@ -14,10 +16,12 @@ public:
 
     template <typename T>
     T *alloc(uint64_t count);
+
+    void reset();
 };
 
 memory_manager::memory_manager(sycl::queue &queue, uint64_t size, bool alloc_on_host)
-    : size(size), allocated(0), queue(queue)
+    : size(size), queue(queue)
 {
 
     if (alloc_on_host)
@@ -25,14 +29,19 @@ memory_manager::memory_manager(sycl::queue &queue, uint64_t size, bool alloc_on_
     else
         memory_region = sycl::malloc_device<char>(size, queue);
 
-    queue.memset(memory_region, 0, size).wait();
-    current_free = memory_region;
+    reset();
 }
 
 
 memory_manager::~memory_manager()
 {
+    #if MEMORY_MANAGER_DEBUG_INFO
+    std::cout << "Freeing memory region of size " << size << " bytes. Allocated: " << allocated << " bytes. Address ranges: " << static_cast<void *>(memory_region) << " - " << static_cast<void *>(memory_region + size) << std::endl;
+    #endif
     sycl::free(memory_region, queue);
+    #if MEMORY_MANAGER_DEBUG_INFO
+    std::cout << "Memory region freed." << std::endl;
+    #endif
 }
 
 template <typename T>
@@ -44,6 +53,8 @@ T *memory_manager::alloc(uint64_t count)
 
     if (allocated + bytes > size)
     {
+        std::cerr << "Memory manager out of memory: requested " << bytes << " bytes, "
+            << (size - allocated) << " bytes available." << std::endl;
         throw std::bad_alloc();
     }
 
@@ -53,4 +64,14 @@ T *memory_manager::alloc(uint64_t count)
     allocated += bytes;
 
     return ptr;
+}
+
+void memory_manager::reset()
+{
+    #if MEMORY_MANAGER_DEBUG_INFO
+    std::cout << "Memory manager reset. Total size: " << size << " bytes. Previously allocated: " << allocated << " bytes." << std::endl;
+    #endif
+    queue.memset(memory_region, 0, size).wait();
+    current_free = memory_region;
+    allocated = 0;
 }

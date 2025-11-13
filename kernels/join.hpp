@@ -4,6 +4,7 @@
 
 #include "../operations/memory_manager.hpp"
 #include "types.hpp"
+#include "common.hpp"
 
 #define PRINT_JOIN_DEBUG_INFO 0
 
@@ -13,14 +14,31 @@ inline T HASH(T X, T Y, T Z)
     return ((X - Z) % Y);
 }
 
-template <typename T>
+class BuildKeysHTKernel : public KernelDefinition
+{
+private:
+    bool *ht;
+    const int *col;
+    const bool *flags;
+    int ht_len, ht_min_value;
+public:
+    BuildKeysHTKernel(bool *hash_table, const int *column, const bool *flags, int ht_length, int ht_min, int col_len)
+        : KernelDefinition(col_len), ht(hash_table), col(column), flags(flags), ht_len(ht_length), ht_min_value(ht_min)
+    {}
+
+    void operator()(sycl::id<1> idx) const
+    {
+        ht[HASH(col[idx], ht_len, ht_min_value)] = flags[idx];
+    }
+};
+
 sycl::event build_keys_ht(
-    T col[],
-    bool flags[],
+    const int col[],
+    const bool flags[],
     int col_len,
     bool ht[],
-    T ht_len,
-    T ht_min_value,
+    int ht_len,
+    int ht_min_value,
     sycl::queue &queue,
     const std::vector<sycl::event> &dependencies)
 {
@@ -39,10 +57,45 @@ sycl::event build_keys_ht(
     );
 }
 
+class BuildKeyValsHTKernel : public KernelDefinition
+{
+private:
+    int *ht;
+    const int *col;
+    const int *agg_col;
+    const bool *flags;
+    int ht_len, ht_min_value;
+public:
+    BuildKeyValsHTKernel(
+        int *hash_table,
+        const int *column,
+        const int *agg_column,
+        const bool *flgs,
+        int ht_length,
+        int ht_min,
+        int col_len)
+        : KernelDefinition(col_len), ht(hash_table), col(column), agg_col(agg_column), flags(flgs),
+        ht_len(ht_length), ht_min_value(ht_min)
+    {}
+
+    void operator()(sycl::id<1> idx) const
+    {
+        auto i = idx[0];
+        if (flags[i])
+        {
+            int hash = HASH(col[i], ht_len, ht_min_value);
+            ht[hash << 1] = 1;
+            ht[(hash << 1) + 1] = agg_col[i];
+        }
+        else
+            ht[HASH(col[i], ht_len, ht_min_value) << 1] = 0;
+    }
+};
+
 sycl::event build_key_vals_ht(
     int col[],
     int agg_col[],
-    bool flags[],
+    const bool flags[],
     int col_len,
     int ht[],
     int ht_len,
@@ -73,14 +126,83 @@ sycl::event build_key_vals_ht(
     );
 }
 
-template <typename T>
+class FilterJoinKernel : public KernelDefinition
+{
+private:
+    const int *probe_col;
+    bool *probe_col_flags;
+    const bool *build_ht;
+    int build_min_value, build_max_value, ht_len;
+public:
+    FilterJoinKernel(
+        const int *probe_column,
+        bool *probe_column_flags,
+        const bool *build_hash_table,
+        int build_min,
+        int build_max,
+        int col_len)
+        : KernelDefinition(col_len), probe_col(probe_column), probe_col_flags(probe_column_flags), build_ht(build_hash_table),
+        build_min_value(build_min), build_max_value(build_max)
+    {
+        ht_len = build_max_value - build_min_value + 1;
+    }
+
+    void operator()(sycl::id<1> idx) const
+    {
+        auto i = idx[0];
+        if (
+            probe_col_flags[i] &&
+            probe_col[i] >= build_min_value &&
+            probe_col[i] <= build_max_value
+            )
+            probe_col_flags[i] = build_ht[HASH(probe_col[i], ht_len, build_min_value)];
+        else
+            probe_col_flags[i] = false;
+    }
+};
+
 sycl::event filter_join(
-    T build_col[],
+    const int *probe_col,
+    bool *probe_col_flags,
+    int probe_col_len,
+    const bool *build_ht,
+    int build_min_value,
+    int build_max_value,
+    sycl::queue &queue,
+    const std::vector<sycl::event> &dependencies)
+{
+    int ht_len = build_max_value - build_min_value + 1;
+
+    return queue.submit(
+        [&](sycl::handler &cgh)
+        {
+            cgh.depends_on(dependencies);
+            cgh.parallel_for(
+                probe_col_len,
+                [=](sycl::id<1> idx)
+                {
+                    auto i = idx[0];
+                    if (
+                        probe_col_flags[i] &&
+                        probe_col[i] >= build_min_value &&
+                        probe_col[i] <= build_max_value
+                        )
+                        probe_col_flags[i] = build_ht[HASH(probe_col[i], ht_len, build_min_value)];
+                    else
+                        probe_col_flags[i] = false;
+                }
+            );
+        }
+    );
+}
+
+sycl::event filter_join(
+    int build_col[],
     bool build_flags[],
     int build_col_len,
-    T build_max_value,
-    T build_min_value,
-    T probe_col[],
+    int build_max_value,
+    int build_min_value,
+    int probe_col[],
     bool probe_col_flags[],
     int probe_col_len,
     bool *build_ht,
@@ -108,29 +230,102 @@ sycl::event filter_join(
         #endif
     }
 
+    return filter_join(
+        probe_col,
+        probe_col_flags,
+        probe_col_len,
+        ht,
+        build_min_value,
+        build_max_value,
+        queue,
+        events
+    );
+}
 
+class FullJoinKernel : public KernelDefinition
+{
+private:
+    const int *probe_col;
+    int *probe_val_out;
+    bool *probe_flags;
+    const int *ht;
+    int ht_len, ht_min_value, ht_max_value;
+public:
+    FullJoinKernel(
+        const int *probe_column,
+        int *probe_value_output,
+        bool *probe_column_flags,
+        const int *hash_table,
+        int ht_min,
+        int ht_max,
+        int col_len)
+        : KernelDefinition(col_len), probe_col(probe_column), probe_val_out(probe_value_output),
+        probe_flags(probe_column_flags), ht(hash_table), ht_min_value(ht_min), ht_max_value(ht_max)
+    {
+        ht_len = ht_max - ht_min + 1;
+    }
 
-    auto e3 = queue.submit(
+    void operator()(sycl::id<1> idx) const
+    {
+        auto i = idx[0];
+        if (probe_flags[i])
+        {
+            int hash = HASH(probe_col[i], ht_len, ht_min_value) << 1;
+            if (probe_col[i] >= ht_min_value &&
+                probe_col[i] <= ht_max_value &&
+                ht[hash] == 1)
+            {
+                probe_val_out[i] = ht[hash + 1]; // save the value to group by on
+            }
+            else
+            {
+                probe_flags[i] = false; // mark as not selected
+            }
+        }
+    }
+};
+
+sycl::event full_join(
+    const int *probe_col,
+    int *probe_val_out,
+    bool *probe_flags,
+    int probe_col_len,
+    const int *ht,
+    int ht_min,
+    int ht_max,
+    sycl::queue &queue,
+    const std::vector<sycl::event> &dependencies
+)
+{
+    int ht_len = ht_max - ht_min + 1;
+
+    return queue.submit(
         [&](sycl::handler &cgh)
         {
-            cgh.depends_on(events);
+            cgh.depends_on(dependencies);
             cgh.parallel_for(
-                probe_col_len,
+                sycl::range<1>{(unsigned long)probe_col_len},
                 [=](sycl::id<1> idx)
                 {
                     auto i = idx[0];
-                    if (
-                        probe_col_flags[i] &&
-                        probe_col[i] >= build_min_value &&
-                        probe_col[i] <= build_max_value
-                        )
-                        probe_col_flags[i] = ht[HASH(probe_col[i], ht_len, build_min_value)];
+                    if (probe_flags[i])
+                    {
+                        int hash = HASH(probe_col[i], ht_len, ht_min);
+                        if (probe_col[i] >= ht_min &&
+                            probe_col[i] <= ht_max &&
+                            ht[hash << 1] == 1)
+                        {
+                            probe_val_out[i] = ht[(hash << 1) + 1]; // save the value to group by on
+                        }
+                        else
+                        {
+                            probe_flags[i] = false; // mark as not selected
+                        }
+                    }
                 }
             );
         }
     );
-
-    return e3;
 }
 
 sycl::event full_join(
@@ -200,29 +395,16 @@ sycl::event full_join(
     start = std::chrono::high_resolution_clock::now();
     #endif
 
-    auto e3 = queue.submit(
-        [&](sycl::handler &cgh)
-        {
-            cgh.depends_on(events);
-            cgh.parallel_for(
-                sycl::range<1>{(unsigned long)probe_table.col_len},
-                [=](sycl::id<1> idx)
-                {
-                    auto i = idx[0];
-                    if (probe_flags[i])
-                    {
-                        int hash = HASH(probe_content[i], ht_len,
-                            build_col_min);
-                        if (probe_content[i] >= build_col_min &&
-                            probe_content[i] <= build_col_max &&
-                            ht[hash << 1] == 1)
-                            probe_content[i] = ht[(hash << 1) + 1]; // replace the probe column value with the value to group by on
-                        else
-                            probe_flags[i] = false; // mark as not selected
-                    }
-                }
-            );
-        }
+    auto e3 = full_join(
+        probe_content,
+        probe_content,
+        probe_flags,
+        probe_table.col_len,
+        ht,
+        build_col_min,
+        build_col_max,
+        queue,
+        events
     );
 
     #if PRINT_JOIN_DEBUG_INFO

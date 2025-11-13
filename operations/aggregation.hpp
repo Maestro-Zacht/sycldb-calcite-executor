@@ -30,9 +30,9 @@ std::vector<sycl::event> parse_aggregate(
     if (group.size() == 0)
     {
         uint64_t *result = gpu_allocator.alloc<uint64_t>(1);
-        events.push_back(aggregate_operation(result,
+        events.push_back(aggregate_operation(
             table_data.columns[table_data.column_indices.at(agg.operands[0])].content,
-            table_data.flags, table_data.col_len, agg.agg, queue, dependencies));
+            table_data.flags, table_data.col_len, result, queue, dependencies));
 
         #if PRINT_AGGREGATE_DEBUG_INFO
         auto end = std::chrono::high_resolution_clock::now();
@@ -162,4 +162,4 @@ std::vector<sycl::event> parse_aggregate(
     }
 
     return events;
-    }
+}
