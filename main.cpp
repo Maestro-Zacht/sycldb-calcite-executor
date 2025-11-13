@@ -123,10 +123,10 @@ std::chrono::duration<double, std::milli> execute_result(
     const std::map<std::string,
     TableData<int>> &all_tables,
     sycl::queue &queue,
+    memory_manager &gpu_allocator,
     std::ostream &perf_out = std::cout
 )
 {
-    memory_manager gpu_allocator(queue, SIZE_TEMP_MEMORY_GPU, false); // memory manager for temporary allocations during query execution
     #if PERFORMANCE_MEASUREMENT_ACTIVE
     bool output_done = false;
     #endif
@@ -509,12 +509,13 @@ int normal_execution(int argc, char **argv)
     CalciteServerClient client(protocol);
     std::string sql;
     sycl::queue queue{
-        sycl::gpu_selector_v,
+        sycl::cpu_selector_v,
         #if USE_FUSION
         sycl::ext::codeplay::experimental::property::queue::enable_fusion {}
         #endif
     };
     memory_manager table_allocator(queue, SIZE_TEMP_MEMORY_CPU, true); // memory manager for table allocations (on host)
+    memory_manager gpu_allocator(queue, SIZE_TEMP_MEMORY_GPU, false); // memory manager for temporary allocations during query execution
 
     #if not PERFORMANCE_MEASUREMENT_ACTIVE
     std::cout << "Running on: " << queue.get_device().get_info<sycl::info::device::name>() << std::endl;
@@ -565,15 +566,18 @@ int normal_execution(int argc, char **argv)
         {
             PlanResult result;
 
-            auto start = std::chrono::high_resolution_clock::now();
             client.parse(result, sql);
-            auto exec_time = execute_result(result, argv[1], all_tables, queue, perf_file);
+            // std::cout << "Starting repetition " << i + 1 << "/" << PERFORMANCE_REPETITIONS << std::endl;
+            auto start = std::chrono::high_resolution_clock::now();
+            auto exec_time = execute_result(result, argv[1], all_tables, queue, gpu_allocator);
             auto end = std::chrono::high_resolution_clock::now();
             std::chrono::duration<double, std::milli> total_time = end - start;
 
             std::cout << "Repetition " << i + 1 << "/" << PERFORMANCE_REPETITIONS
                 << " - " << exec_time.count() << " ms - "
                 << total_time.count() << " ms" << std::endl;
+            perf_file << total_time.count() << '\n';
+            gpu_allocator.reset();
         }
         perf_file.close();
         #else
@@ -1062,9 +1066,9 @@ int test()
 
 int main(int argc, char **argv)
 {
-    // r = test();
-    // r = normal_execution(argc, argv);
-    int r = data_driven_operator_replacement(argc, argv);
+    // int r = test();
+    int r = normal_execution(argc, argv);
+    // int r = data_driven_operator_replacement(argc, argv);
 
     #if not PERFORMANCE_MEASUREMENT_ACTIVE
     std::cout << "Return code: " << r << std::endl;
