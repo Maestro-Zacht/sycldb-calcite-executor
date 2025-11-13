@@ -538,7 +538,6 @@ public:
         memory_manager &cpu_allocator)
     {
         std::vector<sycl::event> events;
-        std::vector<sycl::event> dependencies = execute_pending_kernels();
 
         if (group.size() == 0)
         {
@@ -551,24 +550,33 @@ public:
                 true,
                 true
             );
+            std::vector<KernelBundle> agg_bundles;
 
             const std::vector<Segment> &input_segments = current_columns[agg.operands[0]]->get_segments();
 
             uint64_t *final_result = result_column.get_segments()[0].get_aggregate_data(true);
 
-            events.reserve(input_segments.size());
+            agg_bundles.reserve(input_segments.size());
 
             for (int i = 0; i < input_segments.size(); i++)
             {
                 const Segment &input_segment = input_segments[i];
-                events.push_back(
-                    input_segment.aggregate_operator(
-                        (input_segment.is_on_device() ? flags_gpu : flags_host) + i * SEGMENT_SIZE,
-                        final_result,
-                        dependencies
+                KernelBundle bundle;
+                bundle.add_kernel(
+                    KernelData(
+                        KernelType::AggregateOperationKernel,
+                        input_segment.aggregate_operator(
+                            (input_segment.is_on_device() ? flags_gpu : flags_host) + i * SEGMENT_SIZE,
+                            final_result
+                        )
                     )
                 );
+                agg_bundles.push_back(bundle);
             }
+
+            pending_kernels.push_back(agg_bundles);
+
+            execute_pending_kernels();
 
             bool *new_gpu_flags = gpu_allocator.alloc<bool>(1),
                 *new_cpu_flags = cpu_allocator.alloc<bool>(1);
@@ -586,6 +594,7 @@ public:
         }
         else
         {
+            std::vector<sycl::event> dependencies = execute_pending_kernels();
             uint64_t prod_ranges = 1;
             int *min = cpu_allocator.alloc<int>(group.size()),
                 *max = cpu_allocator.alloc<int>(group.size());

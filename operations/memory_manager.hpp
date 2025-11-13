@@ -2,6 +2,8 @@
 
 #include <sycl/sycl.hpp>
 
+#define MEMORY_MANAGER_DEBUG_INFO 0
+
 class memory_manager
 {
 private:
@@ -33,6 +35,9 @@ memory_manager::memory_manager(sycl::queue &queue, uint64_t size, bool alloc_on_
 
 memory_manager::~memory_manager()
 {
+    #if MEMORY_MANAGER_DEBUG_INFO
+    std::cout << "Freeing memory region of size " << size << " bytes. Allocated: " << allocated << " bytes." << std::endl;
+    #endif
     sycl::free(memory_region, queue);
 }
 
@@ -60,6 +65,9 @@ T *memory_manager::alloc(uint64_t count)
 
 void memory_manager::reset()
 {
+    #if MEMORY_MANAGER_DEBUG_INFO
+    std::cout << "Memory manager reset. Total size: " << size << " bytes. Previously allocated: " << allocated << " bytes." << std::endl;
+    #endif
     queue.memset(memory_region, 0, size).wait();
     current_free = memory_region;
     allocated = 0;

@@ -208,9 +208,34 @@ sycl::event perform_operation(
     );
 }
 
-template <typename T>
+class AggregateOperationKernel : public KernelDefinition
+{
+private:
+    const int *data;
+    const bool *flags;
+    uint64_t *agg_res;
+public:
+    AggregateOperationKernel(const int *data, const bool *flags, int col_len, uint64_t *agg_res)
+        : KernelDefinition(col_len), data(data), flags(flags), agg_res(agg_res)
+    {}
+
+    void operator()(sycl::id<1> idx) const
+    {
+        if (flags[idx])
+        {
+            sycl::atomic_ref<
+                uint64_t,
+                sycl::memory_order::relaxed,
+                sycl::memory_scope::device,
+                sycl::access::address_space::global_space
+            > sum_obj(*agg_res);
+            sum_obj.fetch_add(data[idx]);
+        }
+    }
+};
+
 sycl::event aggregate_operation(
-    const T a[],
+    const int a[],
     const bool flags[],
     int size,
     uint64_t *agg_res,
@@ -305,7 +330,7 @@ sycl::event group_by_aggregate(
                             sycl::memory_scope::device,
                             sycl::access::address_space::global_space
                         > flag_obj(result_flags[hash]);
-                        if (flag_obj.exchange(1) == 0)
+                        if (flag_obj.fetch_add(1) == 0)
                         {
                             for (int j = 0; j < col_num; j++)
                                 results[j][hash] = contents[j][i];

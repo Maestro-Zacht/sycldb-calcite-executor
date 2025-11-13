@@ -533,18 +533,15 @@ public:
         );
     }
 
-    sycl::event aggregate_operator(
+    AggregateOperationKernel *aggregate_operator(
         const bool *flags,
-        uint64_t *agg_res,
-        const std::vector<sycl::event> &dependencies) const
+        uint64_t *agg_res) const
     {
-        return aggregate_operation(
+        return new AggregateOperationKernel(
             on_device ? data_device : data_host,
             flags,
             nrows,
-            agg_res,
-            const_cast<sycl::queue &>(on_device ? gpu_queue : cpu_queue),
-            dependencies
+            agg_res
         );
     }
 
