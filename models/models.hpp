@@ -1015,6 +1015,8 @@ public:
         int col_number = table_column_numbers[table_name], *content;
         columns.reserve(col_number);
 
+        const std::set<int> &columns_needed = table_column_indices[table_name];
+
         for (int i = 0; i < col_number; i++)
         {
             std::string col_name = table_name + std::to_string(i);
@@ -1039,6 +1041,12 @@ public:
                 std::cerr << "Warning: Column length mismatch in " << filename << ": expected " << nrows << ", got " << num_entries << std::endl;
                 columns.emplace_back();
             }
+            else if (columns_needed.find(i) == columns_needed.end())
+            {
+                // Skip loading this column
+                std::cout << "Skipping loading column " << col_name << std::endl;
+                columns.emplace_back();
+            }
             else
             {
                 colData.seekg(0, std::ios::beg);
@@ -1049,11 +1057,6 @@ public:
             colData.close();
         }
         sycl::free(content, cpu_queue);
-    }
-
-    ~Table()
-    {
-        std::cout << "Table " << table_name << " destroyed." << std::endl;
     }
 
     uint64_t get_nrows() const { return nrows; }

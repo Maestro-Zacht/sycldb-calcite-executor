@@ -586,7 +586,7 @@ int normal_execution(int argc, char **argv)
 
         // std::cout << "Result: " << result << std::endl;
 
-        execute_result(result, argv[1], all_tables, queue);
+        execute_result(result, argv[1], all_tables, queue, gpu_allocator);
         #endif
 
         // client.shutdown();
@@ -1067,8 +1067,8 @@ int test()
 int main(int argc, char **argv)
 {
     // int r = test();
-    int r = normal_execution(argc, argv);
-    // int r = data_driven_operator_replacement(argc, argv);
+    // int r = normal_execution(argc, argv);
+    int r = data_driven_operator_replacement(argc, argv);
 
     #if not PERFORMANCE_MEASUREMENT_ACTIVE
     std::cout << "Return code: " << r << std::endl;
