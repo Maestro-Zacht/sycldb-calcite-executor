@@ -555,10 +555,10 @@ int normal_execution(int argc, char **argv)
         #if PERFORMANCE_MEASUREMENT_ACTIVE
         std::string sql_filename = argv[1];
         std::string query_name = sql_filename.substr(sql_filename.find_last_of("/") + 1, 3);
-        std::ofstream perf_file(query_name + "-performance-cxl.log", std::ios::out | std::ios::trunc);
+        std::ofstream perf_file(query_name + "-performance-cpu-s100.log", std::ios::out | std::ios::trunc);
         if (!perf_file.is_open())
         {
-            std::cerr << "Could not open performance log file: " << query_name << "-performance-cxl.log" << std::endl;
+            std::cerr << "Could not open performance log file: " << query_name << "-performance-cpu-s100.log" << std::endl;
             return 1;
         }
 
@@ -1067,8 +1067,8 @@ int test()
 int main(int argc, char **argv)
 {
     // int r = test();
-    // int r = normal_execution(argc, argv);
-    int r = data_driven_operator_replacement(argc, argv);
+    int r = normal_execution(argc, argv);
+    // int r = data_driven_operator_replacement(argc, argv);
 
     #if not PERFORMANCE_MEASUREMENT_ACTIVE
     std::cout << "Return code: " << r << std::endl;
