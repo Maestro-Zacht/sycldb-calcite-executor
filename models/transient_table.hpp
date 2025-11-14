@@ -650,7 +650,7 @@ public:
                     dependencies
                 );
                 events.push_back(e);
-                e.wait();
+                // e.wait();
             }
 
             auto e1 = gpu_queue.submit(
