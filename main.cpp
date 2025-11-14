@@ -900,6 +900,11 @@ int data_driven_operator_replacement(int argc, char **argv)
         Table("lineorder", gpu_queue, cpu_queue),
     };
 
+    for (const Table &table : tables)
+    {
+        std::cout << "num segments: " << table.num_segments() << std::endl;
+    }
+
     for (int i = 0; i < MAX_NTABLES; i++)
         tables[i].move_all_to_device();
     gpu_queue.wait();
@@ -1067,8 +1072,8 @@ int test()
 int main(int argc, char **argv)
 {
     // int r = test();
-    int r = normal_execution(argc, argv);
-    // int r = data_driven_operator_replacement(argc, argv);
+    // int r = normal_execution(argc, argv);
+    int r = data_driven_operator_replacement(argc, argv);
 
     #if not PERFORMANCE_MEASUREMENT_ACTIVE
     std::cout << "Return code: " << r << std::endl;

@@ -14,7 +14,7 @@
 
 #include "execution.hpp"
 
-#define SEGMENT_SIZE (((uint64_t)1) << 22)
+#define SEGMENT_SIZE (((uint64_t)1) << 30)
 
 
 class Segment
@@ -1087,5 +1087,10 @@ public:
     {
         for (auto &col : columns)
             col.move_all_to_device();
+    }
+
+    uint64_t num_segments() const
+    {
+        return columns[4].get_segments().size();
     }
 };
