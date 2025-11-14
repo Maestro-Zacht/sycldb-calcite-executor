@@ -38,7 +38,10 @@ public:
         dirty_cache(false)
     {
         if (count > SEGMENT_SIZE)
+        {
+            std::cerr << "Segment allocation failed: requested size " << count << " exceeds SEGMENT_SIZE " << SEGMENT_SIZE << std::endl;
             throw std::bad_alloc();
+        }
 
         data_host = sycl::malloc_host<int>(count, cpu_queue);
 
@@ -102,7 +105,10 @@ public:
         dirty_cache(false)
     {
         if (count > SEGMENT_SIZE)
+        {
+            std::cerr << "Segment allocation failed: requested size " << count << " exceeds SEGMENT_SIZE " << SEGMENT_SIZE << std::endl;
             throw std::bad_alloc();
+        }
 
         if (is_aggregate_result)
         {
@@ -138,7 +144,10 @@ public:
         dirty_cache(true)
     {
         if (count > SEGMENT_SIZE)
+        {
+            std::cerr << "Segment allocation failed: requested size " << count << " exceeds SEGMENT_SIZE " << SEGMENT_SIZE << std::endl;
             throw std::bad_alloc();
+        }
 
         if (on_device)
         {
@@ -174,7 +183,10 @@ public:
         dirty_cache(true)
     {
         if (count > SEGMENT_SIZE)
+        {
+            std::cerr << "Segment allocation failed: requested size " << count << " exceeds SEGMENT_SIZE " << SEGMENT_SIZE << std::endl;
             throw std::bad_alloc();
+        }
 
         if (on_device)
         {
