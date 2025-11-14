@@ -403,6 +403,9 @@ sycl::event group_by_aggregate(
                             for (int j = 0; j < col_num; j++)
                                 results[j][hash] = contents[j][i];
                         }
+                        // result_flags[hash] = true;
+                        // for (int j = 0; j < col_num; j++)
+                        //     results[j][hash] = contents[j][i];
 
                         sycl::atomic_ref<
                             uint64_t,
