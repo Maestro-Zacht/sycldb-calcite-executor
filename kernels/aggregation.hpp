@@ -340,7 +340,7 @@ public:
                 sycl::memory_scope::device,
                 sycl::access::address_space::global_space
             > flag_obj(result_flags[hash]);
-            if (flag_obj.fetch_add(1) == 0)
+            if (flag_obj.exchange(1) == 0)
             {
                 for (int j = 0; j < col_num; j++)
                     results[j][hash] = contents[j][i];

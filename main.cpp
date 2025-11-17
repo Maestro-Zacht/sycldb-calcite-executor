@@ -619,13 +619,8 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
     memory_manager &cpu_allocator,
     std::ostream &perf_out = std::cout)
 {
-    #if PERFORMANCE_MEASUREMENT_ACTIVE
-    bool output_done = false;
-    #endif
-
     #if USE_FUSION
     sycl::ext::codeplay::experimental::fusion_wrapper fw_gpu{ gpu_queue }, fw_cpu{ cpu_queue };
-    // bool fusion_active = false;
     #endif
 
     ExecutionInfo exec_info = parse_execution_info(result);
@@ -808,14 +803,13 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
         // }
     }
 
-    std::vector<sycl::event> events = transient_tables[output_table[result.rels.size() - 1]].execute_pending_kernels();
+    transient_tables[output_table[result.rels.size() - 1]].execute_pending_kernels();
     // std::cout << "Waiting for all operations to complete. Event list len: " << events.size() << std::endl;
 
     // auto pre_wait = std::chrono::high_resolution_clock::now();
 
     gpu_queue.wait();
     cpu_queue.wait();
-    sycl::event::wait(events);
 
     auto end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double, std::milli> duration = end - start;
@@ -829,8 +823,7 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
     // std::cout << "end" << std::endl;
 
     #if PERFORMANCE_MEASUREMENT_ACTIVE
-    if (!output_done)
-        perf_out << duration.count() << '\n';
+    perf_out << duration.count() << '\n';
     #else
     TransientTable &final_table = transient_tables[output_table[result.rels.size() - 1]];
 
