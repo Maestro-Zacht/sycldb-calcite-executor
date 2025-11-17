@@ -398,14 +398,15 @@ sycl::event group_by_aggregate(
                             sycl::memory_scope::device,
                             sycl::access::address_space::global_space
                         > flag_obj(result_flags[hash]);
-                        if (flag_obj.fetch_add(1) == 0)
+                        unsigned expected = 0;
+                        bool first = flag_obj.compare_exchange_strong(expected, 1);
+                        if (first)
                         {
                             for (int j = 0; j < col_num; j++)
+                            {
                                 results[j][hash] = contents[j][i];
+                            }
                         }
-                        // result_flags[hash] = true;
-                        // for (int j = 0; j < col_num; j++)
-                        //     results[j][hash] = contents[j][i];
 
                         sycl::atomic_ref<
                             uint64_t,

@@ -608,33 +608,34 @@ public:
                 prod_ranges *= max[i] - min[i] + 1;
             }
 
+            const std::vector<Segment> &agg_segments = current_columns[agg.operands[0]]->get_segments();
+
             uint64_t *aggregate_result = gpu_allocator.alloc<uint64_t>(prod_ranges);
             bool *new_gpu_flags = gpu_allocator.alloc<bool>(prod_ranges),
                 *new_cpu_flags = cpu_allocator.alloc<bool>(prod_ranges);
             unsigned *temp_flags = gpu_allocator.alloc<unsigned>(prod_ranges);
 
             int **results = cpu_allocator.alloc<int *>(group.size());
-            const int **contents = cpu_allocator.alloc<const int *>(group.size());
+            const int ***contents = cpu_allocator.alloc<const int **>(agg_segments.size());
 
             for (int i = 0; i < group.size(); i++)
                 results[i] = gpu_allocator.alloc<int>(prod_ranges);
-
-            const std::vector<Segment> &agg_segments = current_columns[agg.operands[0]]->get_segments();
 
             std::vector<sycl::event> events;
             events.reserve(agg_segments.size());
 
             for (int i = 0; i < agg_segments.size(); i++)
             {
+                contents[i] = cpu_allocator.alloc<const int *>(group.size());
                 for (int j = 0; j < group.size(); j++)
                 {
                     const Segment &segment = current_columns[group[j]]->get_segments()[i];
-                    contents[j] = segment.get_data(true);
+                    contents[i][j] = segment.get_data(true);
                 }
                 const Segment &agg_segment = agg_segments[i];
 
                 auto e = group_by_aggregate(
-                    contents,
+                    contents[i],
                     agg_segment.get_data(true),
                     max,
                     min,
@@ -650,7 +651,6 @@ public:
                     dependencies
                 );
                 events.push_back(e);
-                // e.wait();
             }
 
             auto e1 = gpu_queue.submit(
