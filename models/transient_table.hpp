@@ -185,7 +185,7 @@ public:
             }
 
             #if USE_FUSION
-            fw_gpu.complete_fusion(sycl::ext::codeplay::experimental::property::no_barriers {});
+            e = fw_gpu.complete_fusion(sycl::ext::codeplay::experimental::property::no_barriers {});
             #endif
 
             events.push_back(e);
@@ -413,11 +413,11 @@ public:
                     false
                 );
 
-                // std::vector<KernelBundle> fill_bundles_cpu = new_col.fill_with_literal(literal_value, false, cpu_allocator);
-                // pending_kernels.push_back(fill_bundles_cpu);
+                std::vector<KernelBundle> fill_bundles_cpu = new_col.fill_with_literal(literal_value, false, cpu_allocator);
+                pending_kernels.push_back(fill_bundles_cpu);
 
-                std::vector<KernelBundle> fill_bundles_gpu = new_col.fill_with_literal(literal_value, true, gpu_allocator);
-                pending_kernels.push_back(fill_bundles_gpu);
+                // std::vector<KernelBundle> fill_bundles_gpu = new_col.fill_with_literal(literal_value, true, gpu_allocator);
+                // pending_kernels.push_back(fill_bundles_gpu);
 
                 new_columns.push_back(&new_col);
                 break;

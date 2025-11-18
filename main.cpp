@@ -898,9 +898,9 @@ int data_driven_operator_replacement(int argc, char **argv)
         std::cout << table.get_name() << " num segments: " << table.num_segments() << std::endl;
     }
 
-    for (int i = 0; i < MAX_NTABLES; i++)
-        tables[i].move_all_to_device();
-    gpu_queue.wait();
+    // for (int i = 0; i < MAX_NTABLES; i++)
+    //     tables[i].move_all_to_device();
+    // gpu_queue.wait();
 
     #if not PERFORMANCE_MEASUREMENT_ACTIVE
     std::cout << "All tables moved to device." << std::endl;
@@ -928,10 +928,10 @@ int data_driven_operator_replacement(int argc, char **argv)
         #if PERFORMANCE_MEASUREMENT_ACTIVE
         std::string sql_filename = argv[1];
         std::string query_name = sql_filename.substr(sql_filename.find_last_of("/") + 1, 3);
-        std::ofstream perf_file(query_name + "-performance-ddor-fusion.log", std::ios::out | std::ios::trunc);
+        std::ofstream perf_file(query_name + "-performance-ddor-cpu.log", std::ios::out | std::ios::trunc);
         if (!perf_file.is_open())
         {
-            std::cerr << "Could not open performance log file: " << query_name << "-performance-ddor-fusion.log" << std::endl;
+            std::cerr << "Could not open performance log file: " << query_name << "-performance-ddor-cpu.log" << std::endl;
             return 1;
         }
 
@@ -941,15 +941,20 @@ int data_driven_operator_replacement(int argc, char **argv)
 
             auto start = std::chrono::high_resolution_clock::now();
             client.parse(result, sql);
-            auto exec_time = ddor_execute_result(result, argv[1], tables, gpu_queue, cpu_queue, gpu_allocator, cpu_allocator, perf_file);
-            gpu_allocator.reset();
-            cpu_allocator.reset();
+            auto exec_time = ddor_execute_result(result, argv[1], tables, gpu_queue, cpu_queue, gpu_allocator, cpu_allocator);
             auto end = std::chrono::high_resolution_clock::now();
             std::chrono::duration<double, std::milli> total_time = end - start;
 
+            gpu_allocator.reset();
+            cpu_allocator.reset();
+
+            end = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double, std::milli> after_reset = end - start;
+
             std::cout << "Repetition " << i + 1 << "/" << PERFORMANCE_REPETITIONS
                 << " - " << exec_time.count() << " ms - "
-                << total_time.count() << " ms" << std::endl;
+                << total_time.count() << " ms - " << after_reset.count() << " ms" << std::endl;
+            perf_file << total_time.count() << '\n';
         }
         perf_file.close();
         #else

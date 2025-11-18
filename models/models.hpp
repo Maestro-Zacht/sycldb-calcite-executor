@@ -14,7 +14,7 @@
 
 #include "execution.hpp"
 
-#define SEGMENT_SIZE (((uint64_t)1) << 22)
+#define SEGMENT_SIZE (((uint64_t)1) << 30)
 
 
 class Segment
