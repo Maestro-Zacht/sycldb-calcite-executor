@@ -895,7 +895,7 @@ int data_driven_operator_replacement(int argc, char **argv)
 
     for (const Table &table : tables)
     {
-        std::cout << "num segments: " << table.num_segments() << std::endl;
+        std::cout << table.get_name() << " num segments: " << table.num_segments() << std::endl;
     }
 
     for (int i = 0; i < MAX_NTABLES; i++)

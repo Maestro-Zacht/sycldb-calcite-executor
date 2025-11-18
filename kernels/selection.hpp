@@ -123,6 +123,10 @@ public:
         : KernelDefinition(len), comparison(comp), logic(log), flags(f), operand1(op1), operand2(op2)
     {}
 
+    SelectionKernelColumns(bool *f, const int *op1, const std::string &op, const int *op2, const std::string &parent_op, int len)
+        : SelectionKernelColumns(get_comp_op(op), get_logical_op(parent_op), f, op1, op2, len)
+    {}
+
     void operator()(sycl::id<1> idx) const
     {
         flags[idx] = logical(logic, flags[idx], compare(comparison, operand1[idx], operand2[idx]));
@@ -142,37 +146,15 @@ public:
         : KernelDefinition(len), comparison(comp), logic(log), flags(f), operand1(op1), value(val)
     {}
 
+    SelectionKernelLiteral(bool *f, const int *op1, const std::string &op, int val, const std::string &parent_op, int len)
+        : SelectionKernelLiteral(get_comp_op(op), get_logical_op(parent_op), f, op1, val, len)
+    {}
+
     void operator()(sycl::id<1> idx) const
     {
         flags[idx] = logical(logic, flags[idx], compare(comparison, operand1[idx], value));
     }
 };
-
-SelectionKernelColumns *selection_def(
-    bool flags[],
-    const int operand1[],
-    std::string op,
-    const int operand2[],
-    std::string parent_op,
-    int col_len)
-{
-    comp_op comparison = get_comp_op(op);
-    logical_op logic = get_logical_op(parent_op);
-    return new SelectionKernelColumns(comparison, logic, flags, operand1, operand2, col_len);
-}
-
-SelectionKernelLiteral *selection_def(
-    bool flags[],
-    const int operand1[],
-    std::string op,
-    int value,
-    std::string parent_op,
-    int col_len)
-{
-    comp_op comparison = get_comp_op(op);
-    logical_op logic = get_logical_op(parent_op);
-    return new SelectionKernelLiteral(comparison, logic, flags, operand1, value, col_len);
-}
 
 sycl::event selection(
     bool flags[],

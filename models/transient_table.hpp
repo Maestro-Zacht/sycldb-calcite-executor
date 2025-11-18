@@ -155,7 +155,8 @@ public:
 
         for (uint64_t segment_index = 0; segment_index < segment_num; segment_index++)
         {
-            std::vector<sycl::event> deps = pending_kernels_dependencies;
+            std::vector<sycl::event> deps_gpu = pending_kernels_dependencies,
+                deps_cpu = pending_kernels_dependencies;
             sycl::event e;
 
             #if USE_FUSION
@@ -165,9 +166,22 @@ public:
             for (const auto &phases : pending_kernels)
             {
                 const KernelBundle &bundle = phases[segment_index];
-                e = bundle.execute(gpu_queue, deps);
-                deps.clear();
-                deps.push_back(e);
+                bool on_device = bundle.is_on_device();
+                e = bundle.execute(
+                    on_device ? gpu_queue : cpu_queue,
+                    on_device ? deps_gpu : deps_cpu
+                );
+
+                if (on_device)
+                {
+                    deps_gpu.clear();
+                    deps_gpu.push_back(e);
+                }
+                else
+                {
+                    deps_cpu.clear();
+                    deps_cpu.push_back(e);
+                }
             }
 
             #if USE_FUSION
@@ -183,12 +197,23 @@ public:
         return events;
     }
 
-    std::tuple<bool *, int, int> build_keys_hash_table(int column, memory_manager &gpu_allocator, memory_manager &cpu_allocator)
+    std::tuple<bool *, int, int, bool> build_keys_hash_table(int column, memory_manager &gpu_allocator, memory_manager &cpu_allocator)
     {
+        bool on_device = true;
+
+        for (const Segment &seg : current_columns[column]->get_segments())
+        {
+            if (!seg.is_on_device())
+            {
+                on_device = false;
+                break;
+            }
+        }
+
         auto ht_res = current_columns[column]->build_keys_hash_table(
-            flags_gpu,
-            gpu_allocator,
-            cpu_allocator
+            (on_device ? flags_gpu : flags_host),
+            (on_device ? gpu_allocator : cpu_allocator),
+            on_device
         );
 
         std::vector<KernelBundle> ht_kernels = std::get<3>(ht_res);
@@ -197,17 +222,29 @@ public:
         return std::make_tuple(
             std::get<0>(ht_res),
             std::get<1>(ht_res),
-            std::get<2>(ht_res)
+            std::get<2>(ht_res),
+            on_device
         );
     }
 
-    std::tuple<int *, int, int> build_key_vals_hash_table(int column, memory_manager &gpu_allocator, memory_manager &cpu_allocator)
+    std::tuple<int *, int, int, bool> build_key_vals_hash_table(int column, memory_manager &gpu_allocator, memory_manager &cpu_allocator)
     {
+        bool on_device = true;
+
+        for (const Segment &seg : current_columns[column]->get_segments())
+        {
+            if (!seg.is_on_device())
+            {
+                on_device = false;
+                break;
+            }
+        }
+
         auto ht_res = current_columns[column]->build_key_vals_hash_table(
             group_by_column,
-            flags_gpu,
-            gpu_allocator,
-            cpu_allocator
+            (on_device ? flags_gpu : flags_host),
+            (on_device ? gpu_allocator : cpu_allocator),
+            on_device
         );
 
         std::vector<KernelBundle> ht_kernels = std::get<3>(ht_res);
@@ -216,7 +253,8 @@ public:
         return std::make_tuple(
             std::get<0>(ht_res),
             std::get<1>(ht_res),
-            std::get<2>(ht_res)
+            std::get<2>(ht_res),
+            on_device
         );
     }
 
@@ -237,8 +275,7 @@ public:
 
         if (expr.op == "SEARCH")
         {
-            int col_index = expr.operands[0].input;
-            const std::vector<Segment> &segments = current_columns[col_index]->get_segments();
+            const std::vector<Segment> &segments = current_columns[expr.operands[0].input]->get_segments();
 
             ops.reserve(segments.size());
 
@@ -313,7 +350,8 @@ public:
             for (size_t segment_number = 0; segment_number < segments.size(); segment_number++)
             {
                 const Segment &segment = segments[segment_number];
-                KernelBundle bundle;
+                bool on_device = segment.is_on_device() && (literal || (cols[1]->get_segments()[segment_number].is_on_device()));
+                KernelBundle bundle(on_device);
 
                 bundle.add_kernel(
                     KernelData(
@@ -324,8 +362,7 @@ public:
                                 expr.op,
                                 parent_op,
                                 literal_value,
-                                flags_gpu + segment_number * SEGMENT_SIZE,
-                                flags_host + segment_number * SEGMENT_SIZE
+                                (on_device ? flags_gpu : flags_host) + segment_number * SEGMENT_SIZE
                             )
                             ) :
                         static_cast<KernelDefinition *>(
@@ -333,8 +370,7 @@ public:
                                 expr.op,
                                 parent_op,
                                 cols[1]->get_segments()[segment_number],
-                                flags_gpu + segment_number * SEGMENT_SIZE,
-                                flags_host + segment_number * SEGMENT_SIZE
+                                (on_device ? flags_gpu : flags_host) + segment_number * SEGMENT_SIZE
                             )
                             )
                     )
@@ -373,15 +409,16 @@ public:
                     nrows,
                     gpu_queue,
                     cpu_queue,
-                    gpu_allocator,
                     cpu_allocator,
-                    true,
                     false
                 );
 
-                std::vector<KernelBundle> fill_bundles = new_col.fill_with_literal(literal_value);
+                // std::vector<KernelBundle> fill_bundles_cpu = new_col.fill_with_literal(literal_value, false, cpu_allocator);
+                // pending_kernels.push_back(fill_bundles_cpu);
 
-                pending_kernels.push_back(fill_bundles);
+                std::vector<KernelBundle> fill_bundles_gpu = new_col.fill_with_literal(literal_value, true, gpu_allocator);
+                pending_kernels.push_back(fill_bundles_gpu);
+
                 new_columns.push_back(&new_col);
                 break;
             }
@@ -397,9 +434,7 @@ public:
                     nrows,
                     gpu_queue,
                     cpu_queue,
-                    gpu_allocator,
                     cpu_allocator,
-                    true,
                     false
                 );
 
@@ -425,14 +460,13 @@ public:
                         const Segment &segment_a = segments_a[segment_number];
                         const Segment &segment_b = segments_b[segment_number];
                         Segment &segment_result = segments_result[segment_number];
-                        KernelBundle bundle;
 
-                        bool on_device = segment_a.is_on_device();
-                        if (segment_b.is_on_device() != on_device || segment_result.is_on_device() != on_device)
-                        {
-                            std::cerr << "Project operation: Mismatched segment locations between columns" << std::endl;
-                            return;
-                        }
+                        bool on_device = segment_a.is_on_device() && segment_b.is_on_device();
+
+                        if (on_device)
+                            segment_result.build_on_device(gpu_allocator);
+
+                        KernelBundle bundle(on_device);
 
                         bundle.add_kernel(
                             KernelData(
@@ -440,6 +474,7 @@ public:
                                 segment_result.perform_operator(
                                     segment_a,
                                     segment_b,
+                                    on_device,
                                     (on_device ? flags_gpu : flags_host) + segment_number * SEGMENT_SIZE,
                                     expr.op
                                 )
@@ -457,15 +492,11 @@ public:
                     {
                         const Segment &segment = segments[segment_number];
                         Segment &segment_result = segments_result[segment_number];
-                        KernelBundle bundle;
-
                         bool on_device = segment.is_on_device();
+                        KernelBundle bundle(on_device);
 
-                        if (segment_result.is_on_device() != on_device)
-                        {
-                            std::cerr << "Project operation: Mismatched segment locations between columns" << std::endl;
-                            return;
-                        }
+                        if (on_device)
+                            segment_result.build_on_device(gpu_allocator);
 
                         bundle.add_kernel(
                             KernelData(
@@ -473,6 +504,7 @@ public:
                                 segment_result.perform_operator(
                                     (int)expr.operands[0].literal.value,
                                     segment,
+                                    on_device,
                                     (on_device ? flags_gpu : flags_host) + segment_number * SEGMENT_SIZE,
                                     expr.op
                                 )
@@ -490,9 +522,11 @@ public:
                     {
                         const Segment &segment = segments[segment_number];
                         Segment &segment_result = segments_result[segment_number];
-                        KernelBundle bundle;
-
                         bool on_device = segment.is_on_device();
+                        KernelBundle bundle(on_device);
+
+                        if (on_device)
+                            segment_result.build_on_device(gpu_allocator);
 
                         if (segment_result.is_on_device() != on_device)
                         {
@@ -506,6 +540,7 @@ public:
                                 segment_result.perform_operator(
                                     segment,
                                     (int)expr.operands[1].literal.value,
+                                    on_device,
                                     (on_device ? flags_gpu : flags_host) + segment_number * SEGMENT_SIZE,
                                     expr.op
                                 )
@@ -543,31 +578,44 @@ public:
 
         if (group.size() == 0)
         {
+            const std::vector<Segment> &input_segments = current_columns[agg.operands[0]]->get_segments();
+
+            bool on_device = true;
+            for (const Segment &seg : input_segments)
+            {
+                if (!seg.is_on_device())
+                {
+                    on_device = false;
+                    break;
+                }
+            }
+
             Column &result_column = materialized_columns.emplace_back(
                 1,
                 gpu_queue,
                 cpu_queue,
-                gpu_allocator,
                 cpu_allocator,
-                true,
                 true
             );
 
-            const std::vector<Segment> &input_segments = current_columns[agg.operands[0]]->get_segments();
+            Segment &result_segment = result_column.get_segments()[0];
+            if (on_device)
+                result_segment.build_on_device(gpu_allocator);
 
-            uint64_t *final_result = result_column.get_segments()[0].get_aggregate_data(true);
+            uint64_t *final_result = result_segment.get_aggregate_data(on_device);
 
             agg_bundles.reserve(input_segments.size());
 
             for (int i = 0; i < input_segments.size(); i++)
             {
                 const Segment &input_segment = input_segments[i];
-                KernelBundle bundle;
+                KernelBundle bundle(on_device);
                 bundle.add_kernel(
                     KernelData(
                         KernelType::AggregateOperationKernel,
                         input_segment.aggregate_operator(
-                            (input_segment.is_on_device() ? flags_gpu : flags_host) + i * SEGMENT_SIZE,
+                            (on_device ? flags_gpu : flags_host) + i * SEGMENT_SIZE,
+                            on_device,
                             final_result
                         )
                     )
@@ -609,42 +657,55 @@ public:
 
             const std::vector<Segment> &agg_segments = current_columns[agg.operands[0]]->get_segments();
 
-            uint64_t *aggregate_result = gpu_allocator.alloc<uint64_t>(prod_ranges);
-            bool *new_gpu_flags = gpu_allocator.alloc<bool>(prod_ranges),
-                *new_cpu_flags = cpu_allocator.alloc<bool>(prod_ranges);
-            unsigned *temp_flags = gpu_allocator.alloc<unsigned>(prod_ranges);
+            bool on_device = true;
+            for (const Segment &seg : agg_segments)
+            {
+                if (!seg.is_on_device())
+                {
+                    on_device = false;
+                    break;
+                }
+            }
+
+            uint64_t *aggregate_result = (on_device) ?
+                gpu_allocator.alloc<uint64_t>(prod_ranges) :
+                cpu_allocator.alloc<uint64_t>(prod_ranges);
+
+            unsigned *temp_flags = (on_device) ?
+                gpu_allocator.alloc<unsigned>(prod_ranges) :
+                cpu_allocator.alloc<unsigned>(prod_ranges);
 
             int **results = cpu_allocator.alloc<int *>(group.size());
-            const int ***contents = cpu_allocator.alloc<const int **>(agg_segments.size());
 
             for (int i = 0; i < group.size(); i++)
-                results[i] = gpu_allocator.alloc<int>(prod_ranges);
+                results[i] = (on_device) ? gpu_allocator.alloc<int>(prod_ranges) : cpu_allocator.alloc<int>(prod_ranges);
 
             agg_bundles.reserve(agg_segments.size());
 
             for (int i = 0; i < agg_segments.size(); i++)
             {
-                contents[i] = cpu_allocator.alloc<const int *>(group.size());
+                const int **contents = cpu_allocator.alloc<const int *>(group.size());
                 for (int j = 0; j < group.size(); j++)
                 {
                     const Segment &segment = current_columns[group[j]]->get_segments()[i];
-                    contents[i][j] = segment.get_data(true);
+                    contents[j] = segment.get_data(on_device);
                 }
                 const Segment &agg_segment = agg_segments[i];
 
-                KernelBundle bundle;
+                KernelBundle bundle(on_device);
                 bundle.add_kernel(
                     KernelData(
                         KernelType::GroupByAggregateKernel,
                         agg_segment.group_by_aggregate_operator(
-                            contents[i],
+                            contents,
                             max,
                             min,
-                            (agg_segment.is_on_device() ? flags_gpu : flags_host) + i * SEGMENT_SIZE,
+                            (on_device ? flags_gpu : flags_host) + i * SEGMENT_SIZE,
                             aggregate_result,
                             group.size(),
                             results,
                             temp_flags,
+                            on_device,
                             prod_ranges
                         )
                     )
@@ -656,29 +717,60 @@ public:
 
             pending_kernels_dependencies = execute_pending_kernels();
 
-            auto e1 = gpu_queue.submit(
-                [&](sycl::handler &cgh)
-                {
-                    cgh.depends_on(pending_kernels_dependencies);
-                    cgh.parallel_for(
-                        prod_ranges,
-                        [=](sycl::id<1> idx)
-                        {
-                            new_gpu_flags[idx[0]] = temp_flags[idx[0]] != 0;
-                        }
-                    );
-                }
-            );
+            bool *new_cpu_flags = cpu_allocator.alloc<bool>(prod_ranges),
+                *new_gpu_flags = gpu_allocator.alloc<bool>(prod_ranges);
 
-            auto e2 = gpu_queue.memcpy(
-                new_cpu_flags,
-                new_gpu_flags,
-                sizeof(bool) * prod_ranges,
-                e1
-            );
+            sycl::event e;
+
+            if (on_device)
+            {
+                e = gpu_queue.submit(
+                    [&](sycl::handler &cgh)
+                    {
+                        cgh.depends_on(pending_kernels_dependencies);
+                        cgh.parallel_for(
+                            prod_ranges,
+                            [=](sycl::id<1> idx)
+                            {
+                                new_gpu_flags[idx[0]] = temp_flags[idx[0]] != 0;
+                            }
+                        );
+                    }
+                );
+
+                e = gpu_queue.memcpy(
+                    new_cpu_flags,
+                    new_gpu_flags,
+                    sizeof(bool) * prod_ranges,
+                    e
+                );
+            }
+            else
+            {
+                e = cpu_queue.submit(
+                    [&](sycl::handler &cgh)
+                    {
+                        cgh.depends_on(pending_kernels_dependencies);
+                        cgh.parallel_for(
+                            prod_ranges,
+                            [=](sycl::id<1> idx)
+                            {
+                                new_cpu_flags[idx[0]] = temp_flags[idx[0]] != 0;
+                            }
+                        );
+                    }
+                );
+
+                e = gpu_queue.memcpy(
+                    new_gpu_flags,
+                    new_cpu_flags,
+                    sizeof(bool) * prod_ranges,
+                    e
+                );
+            }
 
             pending_kernels_dependencies.clear();
-            pending_kernels_dependencies.push_back(e2);
+            pending_kernels_dependencies.push_back(e);
 
             current_columns.clear();
 
@@ -686,7 +778,7 @@ public:
             {
                 Column &new_col = materialized_columns.emplace_back(
                     results[i],
-                    true,
+                    on_device,
                     gpu_queue,
                     cpu_queue,
                     gpu_allocator,
@@ -698,7 +790,7 @@ public:
 
             Column &agg_col = materialized_columns.emplace_back(
                 aggregate_result,
-                true,
+                on_device,
                 gpu_queue,
                 cpu_queue,
                 gpu_allocator,
@@ -751,12 +843,15 @@ public:
             int build_min_value = std::get<1>(ht_data),
                 build_max_value = std::get<2>(ht_data);
 
+            bool on_device = std::get<3>(ht_data);
+
             pending_kernels.push_back(
                 current_columns[left_column]->semi_join(
-                    flags_gpu,
+                    on_device ? flags_gpu : flags_host,
                     build_min_value,
                     build_max_value,
-                    ht
+                    ht,
+                    on_device
                 )
             );
 
@@ -782,11 +877,12 @@ public:
             int *ht = std::get<0>(ht_data);
             int build_min_value = std::get<1>(ht_data),
                 build_max_value = std::get<2>(ht_data);
+            bool on_device = std::get<3>(ht_data);
 
             auto min_max_gb = right_table.group_by_column->get_min_max();
 
             auto join_data = current_columns[left_column]->full_join_operation(
-                flags_gpu,
+                on_device ? flags_gpu : flags_host,
                 build_min_value,
                 build_max_value,
                 min_max_gb.first,
@@ -795,7 +891,8 @@ public:
                 gpu_allocator,
                 cpu_allocator,
                 gpu_queue,
-                cpu_queue
+                cpu_queue,
+                on_device
             );
 
             pending_kernels.push_back(join_data.first);

@@ -35,7 +35,7 @@ public:
         : kernel_type(kt), kernel_def(std::shared_ptr<KernelDefinition>(kd))
     {}
 
-    sycl::event execute(sycl::queue &queue, const std::vector<sycl::event> &dependencies) const
+    sycl::event execute(sycl::queue queue, const std::vector<sycl::event> &dependencies) const
     {
         switch (kernel_type)
         {
@@ -232,7 +232,17 @@ class KernelBundle
 {
 private:
     std::vector<KernelData> kernels;
+    bool on_device;
 public:
+    KernelBundle(bool on_device)
+        : on_device(on_device)
+    {}
+
+    bool is_on_device() const
+    {
+        return on_device;
+    }
+
     void add_kernel(KernelData kernel)
     {
         kernels.push_back(kernel);
