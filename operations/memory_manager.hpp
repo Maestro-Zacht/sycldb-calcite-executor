@@ -9,9 +9,9 @@ class memory_manager
 private:
     char *memory_region, *current_free;
     uint64_t size, allocated;
-    sycl::queue &queue;
+    sycl::queue queue;
 public:
-    memory_manager(sycl::queue &queue, uint64_t size, bool alloc_on_host);
+    memory_manager(sycl::queue queue, uint64_t size, bool alloc_on_host);
     ~memory_manager();
 
     template <typename T>
@@ -20,10 +20,13 @@ public:
     void reset();
 };
 
-memory_manager::memory_manager(sycl::queue &queue, uint64_t size, bool alloc_on_host)
+memory_manager::memory_manager(sycl::queue queue, uint64_t size, bool alloc_on_host)
     : size(size), queue(queue)
 {
-
+    #if MEMORY_MANAGER_DEBUG_INFO
+    std::cout << "Allocating memory region of size " << size << " bytes on "
+        << (alloc_on_host ? "host" : "device") << "." << std::endl;
+    #endif
     if (alloc_on_host)
         memory_region = sycl::malloc_host<char>(size, queue);
     else
