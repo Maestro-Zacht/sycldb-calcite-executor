@@ -827,9 +827,9 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
     #else
     TransientTable &final_table = transient_tables[output_table[result.rels.size() - 1]];
 
-    final_table.copy_flags_to_host();
-
-    save_result(final_table, data_path);
+    // final_table.copy_flags_to_host();
+    std::cout << "Final result:\n" << final_table << std::endl;
+    // save_result(final_table, data_path);
     #endif
 
     return duration;
@@ -902,7 +902,7 @@ int data_driven_operator_replacement(int argc, char **argv)
     //     tables[i].move_all_to_device();
     // gpu_queue.wait();
 
-    #if not PERFORMANCE_MEASUREMENT_ACTIVE
+    // #if not PERFORMANCE_MEASUREMENT_ACTIVE
     std::cout << "All tables moved to device." << std::endl;
 
     uint64_t total_mem = 0, total_gpu_mem = 0;
@@ -914,10 +914,10 @@ int data_driven_operator_replacement(int argc, char **argv)
     std::cout << "Total memory used by tables: " << total_mem / ((uint64_t)1 << 20)
         << " MB (GPU: " << total_gpu_mem / ((uint64_t)1 << 20) << " MB)" << std::endl;
 
-    #endif
+    // #endif
 
     memory_manager gpu_allocator(gpu_queue, SIZE_TEMP_MEMORY_GPU, false);
-    memory_manager cpu_allocator(gpu_queue, SIZE_TEMP_MEMORY_CPU, true);
+    memory_manager cpu_allocator(cpu_queue, SIZE_TEMP_MEMORY_CPU, true);
 
     try
     {
@@ -928,10 +928,10 @@ int data_driven_operator_replacement(int argc, char **argv)
         #if PERFORMANCE_MEASUREMENT_ACTIVE
         std::string sql_filename = argv[1];
         std::string query_name = sql_filename.substr(sql_filename.find_last_of("/") + 1, 3);
-        std::ofstream perf_file(query_name + "-performance-ddor-cpu.log", std::ios::out | std::ios::trunc);
+        std::ofstream perf_file(query_name + "-performance-cxl-cpu-s100.log", std::ios::out | std::ios::trunc);
         if (!perf_file.is_open())
         {
-            std::cerr << "Could not open performance log file: " << query_name << "-performance-ddor-cpu.log" << std::endl;
+            std::cerr << "Could not open performance log file: " << query_name << "-performance-cxl-cpu-s100.log" << std::endl;
             return 1;
         }
 
@@ -1070,8 +1070,8 @@ int test()
 int main(int argc, char **argv)
 {
     // int r = test();
-    // int r = normal_execution(argc, argv);
-    int r = data_driven_operator_replacement(argc, argv);
+    int r = normal_execution(argc, argv);
+    // int r = data_driven_operator_replacement(argc, argv);
 
     #if not PERFORMANCE_MEASUREMENT_ACTIVE
     std::cout << "Return code: " << r << std::endl;

@@ -54,6 +54,11 @@ T *memory_manager::alloc(uint64_t count)
 
     bytes = (bytes + 7) & (~7); // align to 8 bytes
 
+    #if MEMORY_MANAGER_DEBUG_INFO
+    std::cout << "Memory manager allocating " << bytes << " bytes. "
+        << size << " bytes total, " << allocated << " bytes allocated." << std::endl;
+    #endif
+
     if (allocated + bytes > size)
     {
         std::cerr << "Memory manager out of memory: requested " << bytes << " bytes, "

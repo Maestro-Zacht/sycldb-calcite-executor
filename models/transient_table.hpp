@@ -77,6 +77,7 @@ public:
         group_by_column(nullptr),
         group_by_column_index(0)
     {
+        // std::cout << "Creating transient table with " << nrows << " rows." << std::endl;
         flags_gpu = gpu_allocator.alloc<bool>(nrows);
         auto e1 = gpu_queue.fill<bool>(flags_gpu, true, nrows);
 
@@ -93,6 +94,7 @@ public:
 
         e1.wait();
         e2.wait();
+        // std::cout << "Transient table created." << std::endl;
     }
 
     std::vector<Column *> get_columns() const { return current_columns; }
