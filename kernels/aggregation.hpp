@@ -462,11 +462,11 @@ std::tuple<
     int **results = sycl::malloc_shared<int *>(col_num, queue);
     for (int i = 0; i < col_num; i++)
     {
-        results[i] = gpu_allocator.alloc<int>(prod_ranges);
+        results[i] = gpu_allocator.alloc<int>(prod_ranges, true);
     }
 
-    uint64_t *agg_result = gpu_allocator.alloc<uint64_t>(prod_ranges);
-    unsigned *res_flags = gpu_allocator.alloc<unsigned>(prod_ranges);
+    uint64_t *agg_result = gpu_allocator.alloc<uint64_t>(prod_ranges, true);
+    unsigned *res_flags = gpu_allocator.alloc<unsigned>(prod_ranges, true);
 
     #if PRINT_AGGREGATE_DEBUG_INFO
     end = std::chrono::high_resolution_clock::now();
@@ -528,7 +528,7 @@ std::tuple<
     start = std::chrono::high_resolution_clock::now();
     #endif
 
-    bool *final_flags = gpu_allocator.alloc<bool>(prod_ranges);
+    bool *final_flags = gpu_allocator.alloc<bool>(prod_ranges, true);
     auto e5 = queue.submit(
         [&](sycl::handler &cgh)
         {

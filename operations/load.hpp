@@ -15,7 +15,7 @@ TableData<int> loadTable(
     int col_number,
     const std::set<int> &columns,
     sycl::queue &queue,
-    memory_manager &gpu_allocator,
+    memory_manager &allocator,
     bool load_on_device = true)
 {
     TableData<int> res;
@@ -52,7 +52,7 @@ TableData<int> loadTable(
 
         if (load_on_device)
         {
-            res.columns[i].content = gpu_allocator.alloc<int>(num_entries);
+            res.columns[i].content = allocator.alloc<int>(num_entries, true);
             queue.memcpy(content, res.columns[i].content, num_entries * sizeof(int)).wait();
             sycl::free(content, queue);
         }
@@ -108,7 +108,7 @@ TableData<int> loadTable(
         << res.col_number << " columns ("
         << res.columns_size << " in memory)" << std::endl;
 
-    res.flags = gpu_allocator.alloc<bool>(res.col_len);
+    res.flags = allocator.alloc<bool>(res.col_len, true);
     queue.fill(res.flags, true, res.col_len).wait();
     return res;
 }
@@ -150,7 +150,7 @@ TableData<int> copy_table(
         res.column_indices[col_idx] = i; // map the column index to the actual position
         int orig_col_idx = table_data.column_indices.at(col_idx);
 
-        int *content = gpu_allocator.alloc<int>(table_data.col_len);
+        int *content = gpu_allocator.alloc<int>(table_data.col_len, true);
         queue.copy(table_data.columns[orig_col_idx].content, content, table_data.col_len);
         res.columns[i].content = content;
         res.columns[i].has_ownership = true;
@@ -162,7 +162,7 @@ TableData<int> copy_table(
         i++;
     }
 
-    res.flags = gpu_allocator.alloc<bool>(res.col_len);
+    res.flags = gpu_allocator.alloc<bool>(res.col_len, true);
     queue.copy(table_data.flags, res.flags, res.col_len);
     return res;
 }

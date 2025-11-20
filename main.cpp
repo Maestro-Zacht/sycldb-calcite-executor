@@ -179,7 +179,7 @@ std::chrono::duration<double, std::milli> execute_result(
             {
                 // filter join ht
                 int ht_len = column_info.max_value - column_info.min_value + 1;
-                bool *ht = gpu_allocator.alloc<bool>(ht_len);
+                bool *ht = gpu_allocator.alloc<bool>(ht_len, true);
 
                 table_info.ht = ht;
                 table_info.ht_min = column_info.min_value;
@@ -189,7 +189,7 @@ std::chrono::duration<double, std::milli> execute_result(
             {
                 // full join ht
                 int ht_len = column_info.max_value - column_info.min_value + 1,
-                    *ht = gpu_allocator.alloc<int>(ht_len * 2);
+                    *ht = gpu_allocator.alloc<int>(ht_len * 2, true);
 
                 table_info.ht = ht;
                 table_info.ht_min = column_info.min_value;
@@ -451,20 +451,20 @@ std::chrono::duration<double, std::milli> execute_result(
 
     #if not PERFORMANCE_MEASUREMENT_ACTIVE
     TableData<int> &final_table = tables[output_table[result.rels.size() - 1]];
-    memory_manager final_table_allocator(queue, ((uint64_t)1) << 30, true);
+    memory_manager final_table_allocator(queue, ((uint64_t)1) << 30);
     for (int i = 0; i < final_table.columns_size; i++)
     {
         if (final_table.columns[i].has_ownership)
         {
             if (final_table.columns[i].is_aggregate_result)
             {
-                uint64_t *host_col = final_table_allocator.alloc<uint64_t>(final_table.col_len);
+                uint64_t *host_col = final_table_allocator.alloc<uint64_t>(final_table.col_len, true);
                 queue.copy((uint64_t *)final_table.columns[i].content, host_col, final_table.col_len).wait();
                 final_table.columns[i].content = (int *)host_col;
             }
             else
             {
-                int *host_col = final_table_allocator.alloc<int>(final_table.col_len);
+                int *host_col = final_table_allocator.alloc<int>(final_table.col_len, true);
                 queue.copy(final_table.columns[i].content, host_col, final_table.col_len).wait();
                 final_table.columns[i].content = host_col;
             }
@@ -473,7 +473,7 @@ std::chrono::duration<double, std::milli> execute_result(
             std::cout << "!!!!!!!!!! Column " << i << " does not have ownership, skipping copy to host !!!!!!!!!!" << std::endl;
     }
 
-    bool *host_flags = final_table_allocator.alloc<bool>(final_table.col_len);
+    bool *host_flags = final_table_allocator.alloc<bool>(final_table.col_len, true);
     queue.copy(final_table.flags, host_flags, final_table.col_len).wait();
     final_table.flags = host_flags;
 
@@ -514,8 +514,8 @@ int normal_execution(int argc, char **argv)
         sycl::ext::codeplay::experimental::property::queue::enable_fusion {}
         #endif
     };
-    memory_manager table_allocator(queue, SIZE_TEMP_MEMORY_CPU, true); // memory manager for table allocations (on host)
-    memory_manager gpu_allocator(queue, SIZE_TEMP_MEMORY_GPU, false); // memory manager for temporary allocations during query execution
+    memory_manager table_allocator(queue, SIZE_TEMP_MEMORY_CPU); // memory manager for table allocations (on host)
+    memory_manager gpu_allocator(queue, SIZE_TEMP_MEMORY_GPU); // memory manager for temporary allocations during query execution
 
     #if not PERFORMANCE_MEASUREMENT_ACTIVE
     std::cout << "Running on: " << queue.get_device().get_info<sycl::info::device::name>() << std::endl;
@@ -827,9 +827,9 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
     #else
     TransientTable &final_table = transient_tables[output_table[result.rels.size() - 1]];
 
-    // final_table.copy_flags_to_host();
-    std::cout << "Final result:\n" << final_table << std::endl;
-    // save_result(final_table, data_path);
+    final_table.copy_flags_to_host();
+    // std::cout << "Final result:\n" << final_table << std::endl;
+    save_result(final_table, data_path);
     #endif
 
     return duration;
@@ -898,12 +898,12 @@ int data_driven_operator_replacement(int argc, char **argv)
         std::cout << table.get_name() << " num segments: " << table.num_segments() << std::endl;
     }
 
-    // for (int i = 0; i < MAX_NTABLES; i++)
-    //     tables[i].move_all_to_device();
-    // gpu_queue.wait();
+    for (int i = 0; i < MAX_NTABLES; i++)
+        tables[i].move_all_to_device();
+    gpu_queue.wait();
 
     // #if not PERFORMANCE_MEASUREMENT_ACTIVE
-    // std::cout << "All tables moved to device." << std::endl;
+    std::cout << "All tables moved to device." << std::endl;
 
     uint64_t total_mem = 0, total_gpu_mem = 0;
     for (int i = 0; i < MAX_NTABLES; i++)
@@ -916,8 +916,8 @@ int data_driven_operator_replacement(int argc, char **argv)
 
     // #endif
 
-    memory_manager gpu_allocator(gpu_queue, SIZE_TEMP_MEMORY_GPU, false);
-    memory_manager cpu_allocator(cpu_queue, SIZE_TEMP_MEMORY_CPU, false);
+    memory_manager gpu_allocator(gpu_queue, SIZE_TEMP_MEMORY_GPU);
+    memory_manager cpu_allocator(cpu_queue, SIZE_TEMP_MEMORY_CPU);
 
     try
     {
@@ -928,10 +928,10 @@ int data_driven_operator_replacement(int argc, char **argv)
         #if PERFORMANCE_MEASUREMENT_ACTIVE
         std::string sql_filename = argv[1];
         std::string query_name = sql_filename.substr(sql_filename.find_last_of("/") + 1, 3);
-        std::ofstream perf_file(query_name + "-performance-cpu-s20.log", std::ios::out | std::ios::trunc);
+        std::ofstream perf_file(query_name + "-performance-ddor-1seg.log", std::ios::out | std::ios::trunc);
         if (!perf_file.is_open())
         {
-            std::cerr << "Could not open performance log file: " << query_name << "-performance-cpu-s20.log" << std::endl;
+            std::cerr << "Could not open performance log file: " << query_name << "-performance-ddor-1seg.log" << std::endl;
             return 1;
         }
 
@@ -941,7 +941,7 @@ int data_driven_operator_replacement(int argc, char **argv)
 
             auto start = std::chrono::high_resolution_clock::now();
             client.parse(result, sql);
-            auto exec_time = ddor_execute_result(result, argv[1], tables, gpu_queue, cpu_queue, gpu_allocator, cpu_allocator);
+            auto exec_time = ddor_execute_result(result, argv[1], tables, gpu_queue, cpu_queue, gpu_allocator, cpu_allocator, perf_file);
             auto end = std::chrono::high_resolution_clock::now();
             std::chrono::duration<double, std::milli> total_time = end - start;
 
@@ -954,7 +954,7 @@ int data_driven_operator_replacement(int argc, char **argv)
             std::cout << "Repetition " << i + 1 << "/" << PERFORMANCE_REPETITIONS
                 << " - " << exec_time.count() << " ms - "
                 << total_time.count() << " ms - " << after_reset.count() << " ms" << std::endl;
-            perf_file << total_time.count() << '\n';
+            // perf_file << total_time.count() << '\n';
         }
         perf_file.close();
         #else

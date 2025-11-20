@@ -14,7 +14,7 @@
 
 #include "execution.hpp"
 
-#define SEGMENT_SIZE (((uint64_t)1) << 50)
+#define SEGMENT_SIZE (((uint64_t)1) << 22)
 
 
 class Segment
@@ -110,7 +110,7 @@ public:
 
         if (is_aggregate_result)
         {
-            data_host = reinterpret_cast<int *>(cpu_allocator.alloc<uint64_t>(count));
+            data_host = reinterpret_cast<int *>(cpu_allocator.alloc<uint64_t>(count, true));
             //     if (on_device)
             //         data_device = reinterpret_cast<int *>(gpu_allocator.alloc<uint64_t>(count));
             //     else
@@ -118,7 +118,7 @@ public:
         }
         else
         {
-            data_host = cpu_allocator.alloc<int>(count);
+            data_host = cpu_allocator.alloc<int>(count, true);
             //     if (on_device)
             //         data_device = gpu_allocator.alloc<int>(count);
             //     else
@@ -155,12 +155,12 @@ public:
         if (on_device)
         {
             data_device = reinterpret_cast<int *>(init_data);
-            data_host = reinterpret_cast<int *>(cpu_allocator.alloc<uint64_t>(count));
+            data_host = reinterpret_cast<int *>(cpu_allocator.alloc<uint64_t>(count, true));
         }
         else
         {
             data_host = reinterpret_cast<int *>(init_data);
-            data_device = reinterpret_cast<int *>(gpu_allocator.alloc<uint64_t>(count));
+            data_device = reinterpret_cast<int *>(gpu_allocator.alloc<uint64_t>(count, true));
         }
 
         min = 0;
@@ -194,12 +194,12 @@ public:
         if (on_device)
         {
             data_device = init_data;
-            data_host = cpu_allocator.alloc<int>(count);
+            data_host = cpu_allocator.alloc<int>(count, true);
         }
         else
         {
             data_host = init_data;
-            data_device = gpu_allocator.alloc<int>(count);
+            data_device = gpu_allocator.alloc<int>(count, true);
         }
 
         min = 0;
@@ -230,7 +230,7 @@ public:
             return;
 
         on_device = true;
-        data_device = allocator.alloc<int>(nrows);
+        data_device = allocator.alloc<int>(nrows, true);
     }
 
     FillKernel *fill_with_literal(int literal, bool fill_on_device)
@@ -379,7 +379,7 @@ public:
         int *data = on_device ? data_device : data_host;
         bool *flags = on_device ? gpu_flags : cpu_flags;
 
-        bool *local_flags = allocator.alloc<bool>(nrows);
+        bool *local_flags = allocator.alloc<bool>(nrows, true);
 
         KernelBundle operations(on_device);
 
@@ -905,7 +905,7 @@ public:
 
         int ht_len = max_value - min_value + 1;
 
-        bool *ht = allocator.alloc<bool>(ht_len);
+        bool *ht = allocator.alloc<bool>(ht_len, true);
 
         for (int i = 0; i < segments.size(); i++)
         {
@@ -972,7 +972,7 @@ public:
 
         int ht_len = max_value - min_value + 1;
 
-        int *ht = allocator.alloc<int>(ht_len * 2);
+        int *ht = allocator.alloc<int>(ht_len * 2, true);
 
         for (int i = 0; i < segments.size(); i++)
         {

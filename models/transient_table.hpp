@@ -78,10 +78,10 @@ public:
         group_by_column_index(0)
     {
         // std::cout << "Creating transient table with " << nrows << " rows." << std::endl;
-        flags_gpu = gpu_allocator.alloc<bool>(nrows);
+        flags_gpu = gpu_allocator.alloc<bool>(nrows, true);
         auto e1 = gpu_queue.fill<bool>(flags_gpu, true, nrows);
 
-        flags_host = cpu_allocator.alloc<bool>(nrows);
+        flags_host = cpu_allocator.alloc<bool>(nrows, true);
         auto e2 = cpu_queue.fill<bool>(flags_host, true, nrows);
 
         const std::vector<Column> &base_columns = base_table->get_columns();
@@ -629,8 +629,8 @@ public:
 
             pending_kernels_dependencies = execute_pending_kernels();
 
-            bool *new_gpu_flags = gpu_allocator.alloc<bool>(1),
-                *new_cpu_flags = cpu_allocator.alloc<bool>(1);
+            bool *new_gpu_flags = gpu_allocator.alloc<bool>(1, true),
+                *new_cpu_flags = cpu_allocator.alloc<bool>(1, true);
 
             pending_kernels_dependencies.push_back(gpu_queue.fill<bool>(new_gpu_flags, true, 1));
             new_cpu_flags[0] = true;
@@ -645,18 +645,6 @@ public:
         }
         else
         {
-            uint64_t prod_ranges = 1;
-            int *min = cpu_allocator.alloc<int>(group.size()),
-                *max = cpu_allocator.alloc<int>(group.size());
-
-            for (int i = 0; i < group.size(); i++)
-            {
-                auto min_max = current_columns[group[i]]->get_min_max();
-                min[i] = min_max.first;
-                max[i] = min_max.second;
-                prod_ranges *= max[i] - min[i] + 1;
-            }
-
             const std::vector<Segment> &agg_segments = current_columns[agg.operands[0]]->get_segments();
 
             bool on_device = true;
@@ -669,24 +657,34 @@ public:
                 }
             }
 
-            uint64_t *aggregate_result = (on_device) ?
-                gpu_allocator.alloc<uint64_t>(prod_ranges) :
-                cpu_allocator.alloc<uint64_t>(prod_ranges);
+            memory_manager &allocator = on_device ? gpu_allocator : cpu_allocator;
 
-            unsigned *temp_flags = (on_device) ?
-                gpu_allocator.alloc<unsigned>(prod_ranges) :
-                cpu_allocator.alloc<unsigned>(prod_ranges);
-
-            int **results = cpu_allocator.alloc<int *>(group.size());
+            uint64_t prod_ranges = 1;
+            int *min = allocator.alloc<int>(group.size(), !on_device),
+                *max = allocator.alloc<int>(group.size(), !on_device);
 
             for (int i = 0; i < group.size(); i++)
-                results[i] = (on_device) ? gpu_allocator.alloc<int>(prod_ranges) : cpu_allocator.alloc<int>(prod_ranges);
+            {
+                auto min_max = current_columns[group[i]]->get_min_max();
+                min[i] = min_max.first;
+                max[i] = min_max.second;
+                prod_ranges *= max[i] - min[i] + 1;
+            }
+
+            uint64_t *aggregate_result = allocator.alloc<uint64_t>(prod_ranges, true);
+
+            unsigned *temp_flags = allocator.alloc<unsigned>(prod_ranges, true);
+
+            int **results = allocator.alloc<int *>(group.size(), !on_device);
+
+            for (int i = 0; i < group.size(); i++)
+                results[i] = allocator.alloc<int>(prod_ranges, true);
 
             agg_bundles.reserve(agg_segments.size());
 
             for (int i = 0; i < agg_segments.size(); i++)
             {
-                const int **contents = cpu_allocator.alloc<const int *>(group.size());
+                const int **contents = allocator.alloc<const int *>(group.size(), !on_device);
                 for (int j = 0; j < group.size(); j++)
                 {
                     const Segment &segment = current_columns[group[j]]->get_segments()[i];
@@ -719,8 +717,8 @@ public:
 
             pending_kernels_dependencies = execute_pending_kernels();
 
-            bool *new_cpu_flags = cpu_allocator.alloc<bool>(prod_ranges),
-                *new_gpu_flags = gpu_allocator.alloc<bool>(prod_ranges);
+            bool *new_cpu_flags = cpu_allocator.alloc<bool>(prod_ranges, true),
+                *new_gpu_flags = gpu_allocator.alloc<bool>(prod_ranges, true);
 
             sycl::event e;
 

@@ -31,7 +31,7 @@ std::vector<sycl::event> parse_filter(
     if (expr.op == "SEARCH")
     {
         int col_index = table_data.column_indices.at(expr.operands[0].input);
-        bool *local_flags = gpu_allocator.alloc<bool>(table_data.col_len);
+        bool *local_flags = gpu_allocator.alloc<bool>(table_data.col_len, true);
         sycl::event last_event;
 
         if (expr.operands[1].literal.rangeSet.size() == 1) // range

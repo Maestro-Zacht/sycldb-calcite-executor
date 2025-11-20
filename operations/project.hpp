@@ -37,7 +37,7 @@ std::vector<sycl::event> parse_project(
             break;
         case ExprOption::LITERAL:
             // create a new column with the literal value
-            new_columns[i].content = gpu_allocator.alloc<int>(table_data.col_len);
+            new_columns[i].content = gpu_allocator.alloc<int>(table_data.col_len, true);
             events = {
                 queue.fill(new_columns[i].content, (int)exprs[i].literal.value, table_data.col_len, std::move(events))
             };
@@ -53,7 +53,7 @@ std::vector<sycl::event> parse_project(
                 std::cerr << "Project operation: Unsupported number of operands for EXPR" << std::endl;
                 return {};
             }
-            new_columns[i].content = gpu_allocator.alloc<int>(table_data.col_len);
+            new_columns[i].content = gpu_allocator.alloc<int>(table_data.col_len, true);
             new_columns[i].has_ownership = true;
             new_columns[i].is_aggregate_result = false;
 

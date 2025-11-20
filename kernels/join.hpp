@@ -220,7 +220,7 @@ sycl::event filter_join(
     }
     else
     {
-        ht = gpu_allocator.alloc<bool>(ht_len);
+        ht = gpu_allocator.alloc<bool>(ht_len, true);
 
         auto e2 = build_keys_ht(build_col, build_flags, build_col_len, ht, ht_len, build_min_value, queue, events);
         events = { e2 };
@@ -361,7 +361,7 @@ sycl::event full_join(
         build_col_max = build_table.columns[build_column].max_value;
         ht_len = build_col_max - build_col_min + 1;
 
-        ht = gpu_allocator.alloc<int>(ht_len * 2);
+        ht = gpu_allocator.alloc<int>(ht_len * 2, true);
 
         #if PRINT_JOIN_DEBUG_INFO
         auto end = std::chrono::high_resolution_clock::now();
