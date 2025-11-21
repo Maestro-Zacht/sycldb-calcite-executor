@@ -187,7 +187,7 @@ public:
             }
 
             #if USE_FUSION
-            e = fw_gpu.complete_fusion(sycl::ext::codeplay::experimental::property::no_barriers {});
+            fw_gpu.complete_fusion(sycl::ext::codeplay::experimental::property::no_barriers {});
             #endif
 
             events.push_back(e);
