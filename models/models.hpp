@@ -715,7 +715,7 @@ public:
         uint64_t full_segments = nrows / SEGMENT_SIZE;
         uint64_t remainder = nrows % SEGMENT_SIZE;
 
-        segments.reserve(full_segments + (remainder > 0 ? 1 : 0));
+        segments.reserve(full_segments + (remainder > 0));
 
         for (uint64_t i = 0; i < full_segments; i++)
             segments.emplace_back(init_data + i * SEGMENT_SIZE, gpu_queue, cpu_queue);
@@ -735,7 +735,7 @@ public:
         uint64_t full_segments = nrows / SEGMENT_SIZE;
         uint64_t remainder = nrows % SEGMENT_SIZE;
 
-        segments.reserve(full_segments + (remainder > 0 ? 1 : 0));
+        segments.reserve(full_segments + (remainder > 0));
 
         for (uint64_t i = 0; i < full_segments; i++)
             segments.emplace_back(gpu_queue, cpu_queue, cpu_allocator, is_aggregate_result);
@@ -757,7 +757,7 @@ public:
         uint64_t full_segments = nrows / SEGMENT_SIZE;
         uint64_t remainder = nrows % SEGMENT_SIZE;
 
-        segments.reserve(full_segments + (remainder > 0 ? 1 : 0));
+        segments.reserve(full_segments + (remainder > 0));
 
         for (uint64_t i = 0; i < full_segments; i++)
             segments.emplace_back(
@@ -794,7 +794,7 @@ public:
         uint64_t full_segments = nrows / SEGMENT_SIZE;
         uint64_t remainder = nrows % SEGMENT_SIZE;
 
-        segments.reserve(full_segments + (remainder > 0 ? 1 : 0));
+        segments.reserve(full_segments + (remainder > 0));
 
         for (uint64_t i = 0; i < full_segments; i++)
             segments.emplace_back(
@@ -928,30 +928,42 @@ public:
     }
 
     std::vector<KernelBundle> semi_join(
-        bool *probe_flags,
+        bool *probe_flags_gpu,
+        bool *probe_flags_cpu,
         int build_min_value,
         int build_max_value,
-        const bool *build_ht,
-        bool on_device) const
+        const bool *ht_gpu,
+        const bool *ht_cpu,
+        std::vector<bool> &flags_modified_gpu,
+        std::vector<bool> &flags_modified_host
+    ) const
     {
         std::vector<KernelBundle> ops;
         ops.reserve(segments.size());
 
         for (int i = 0; i < segments.size(); i++)
         {
+            const Segment &seg = segments[i];
+            bool on_device = seg.is_on_device() && ht_gpu != nullptr;
             KernelBundle bundle(on_device);
+
             bundle.add_kernel(
                 KernelData(
                     KernelType::FilterJoinKernel,
-                    segments[i].semi_join_operator(
-                        probe_flags + i * SEGMENT_SIZE,
+                    seg.semi_join_operator(
+                        (on_device ? probe_flags_gpu : probe_flags_cpu) + i * SEGMENT_SIZE,
                         build_min_value,
                         build_max_value,
-                        build_ht
+                        on_device ? ht_gpu : ht_cpu
                     )
                 )
             );
             ops.push_back(bundle);
+
+            if (on_device)
+                flags_modified_gpu[i] = true;
+            else
+                flags_modified_host[i] = true;
         }
 
         return ops;

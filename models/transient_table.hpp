@@ -45,6 +45,7 @@ class TransientTable
 {
 private:
     bool *flags_host, *flags_gpu;
+    std::vector<bool> flags_modified_host, flags_modified_gpu;
     sycl::queue gpu_queue, cpu_queue;
     #if USE_FUSION
     sycl::ext::codeplay::experimental::fusion_wrapper fw_gpu, fw_cpu;
@@ -83,6 +84,11 @@ public:
 
         flags_host = cpu_allocator.alloc<bool>(nrows, true);
         auto e2 = cpu_queue.fill<bool>(flags_host, true, nrows);
+
+        uint64_t segment_num = nrows / SEGMENT_SIZE + (nrows % SEGMENT_SIZE > 0);
+
+        flags_modified_gpu.resize(segment_num, false);
+        flags_modified_host.resize(segment_num, false);
 
         const std::vector<Column> &base_columns = base_table->get_columns();
 
@@ -138,7 +144,7 @@ public:
 
     std::vector<sycl::event> execute_pending_kernels()
     {
-        uint64_t segment_num = nrows / SEGMENT_SIZE + (nrows % SEGMENT_SIZE > 0 ? 1 : 0);
+        uint64_t segment_num = nrows / SEGMENT_SIZE + (nrows % SEGMENT_SIZE > 0);
         std::vector<sycl::event> events;
 
         if (pending_kernels.size() == 0)
@@ -170,8 +176,10 @@ public:
                 const KernelBundle &bundle = phases[segment_index];
                 bool on_device = bundle.is_on_device();
                 e = bundle.execute(
-                    on_device ? gpu_queue : cpu_queue,
-                    on_device ? deps_gpu : deps_cpu
+                    gpu_queue,
+                    cpu_queue,
+                    deps_gpu,
+                    deps_cpu
                 );
 
                 if (on_device)
@@ -201,16 +209,113 @@ public:
 
     std::tuple<bool *, int, int, bool> build_keys_hash_table(int column, memory_manager &gpu_allocator, memory_manager &cpu_allocator)
     {
-        bool on_device = true;
+        bool on_device = true, need_flag_sync = false;
+        std::vector<KernelBundle> flag_sync_kernels;
 
-        for (const Segment &seg : current_columns[column]->get_segments())
+        const std::vector<Segment> &segments = current_columns[column]->get_segments();
+
+        flag_sync_kernels.reserve(segments.size());
+
+        for (uint64_t i = 0; i < segments.size(); i++)
         {
-            if (!seg.is_on_device())
+            const Segment &seg = segments[i];
+            bool seg_on_device = seg.is_on_device();
+            KernelBundle bundle(seg_on_device);
+            if (seg_on_device)
+            {
+                if (flags_modified_host[i])
+                {
+                    need_flag_sync = true;
+                    if (flags_modified_gpu[i])
+                    {
+                        bool *temp_flags = gpu_allocator.alloc<bool>(seg.get_nrows(), true);
+                        bundle.add_kernel(
+                            KernelData(
+                                KernelType::SyncFlagsKernel,
+                                new SyncFlagsKernel(
+                                    flags_host + i * SEGMENT_SIZE,
+                                    flags_gpu + i * SEGMENT_SIZE,
+                                    temp_flags,
+                                    seg.get_nrows()
+                                )
+                            )
+                        );
+                    }
+                    else
+                    {
+                        bundle.add_kernel(
+                            KernelData(
+                                KernelType::CopyFlagsKernel,
+                                new CopyFlagsKernel(
+                                    flags_host + i * SEGMENT_SIZE,
+                                    flags_gpu + i * SEGMENT_SIZE,
+                                    seg.get_nrows()
+                                )
+                            )
+                        );
+                    }
+                }
+                else
+                {
+                    bundle.add_kernel(
+                        KernelData(
+                            KernelType::EmptyKernel,
+                            new EmptyKernel(1)
+                        )
+                    );
+                }
+            }
+            else
             {
                 on_device = false;
-                break;
+                if (flags_modified_gpu[i])
+                {
+                    need_flag_sync = true;
+                    if (flags_modified_host[i])
+                    {
+                        bool *temp_flags = cpu_allocator.alloc<bool>(seg.get_nrows(), true);
+                        bundle.add_kernel(
+                            KernelData(
+                                KernelType::SyncFlagsKernel,
+                                new SyncFlagsKernel(
+                                    flags_gpu + i * SEGMENT_SIZE,
+                                    flags_host + i * SEGMENT_SIZE,
+                                    temp_flags,
+                                    seg.get_nrows()
+                                )
+                            )
+                        );
+                    }
+                    else
+                    {
+                        bundle.add_kernel(
+                            KernelData(
+                                KernelType::CopyFlagsKernel,
+                                new CopyFlagsKernel(
+                                    flags_gpu + i * SEGMENT_SIZE,
+                                    flags_host + i * SEGMENT_SIZE,
+                                    seg.get_nrows()
+                                )
+                            )
+                        );
+                    }
+                }
+                else
+                {
+                    bundle.add_kernel(
+                        KernelData(
+                            KernelType::EmptyKernel,
+                            new EmptyKernel(1)
+                        )
+                    );
+                }
             }
+
+            flag_sync_kernels.push_back(bundle);
         }
+
+        if (need_flag_sync)
+            pending_kernels.push_back(flag_sync_kernels);
 
         auto ht_res = current_columns[column]->build_keys_hash_table(
             (on_device ? flags_gpu : flags_host),
@@ -284,16 +389,21 @@ public:
             for (size_t segment_number = 0; segment_number < segments.size(); segment_number++)
             {
                 const Segment &segment = segments[segment_number];
-                ops.push_back(
-                    segment.search_operator(
-                        expr,
-                        parent_op,
-                        gpu_allocator,
-                        cpu_allocator,
-                        flags_gpu + segment_number * SEGMENT_SIZE,
-                        flags_host + segment_number * SEGMENT_SIZE
-                    )
+                KernelBundle bundle = segment.search_operator(
+                    expr,
+                    parent_op,
+                    gpu_allocator,
+                    cpu_allocator,
+                    flags_gpu + segment_number * SEGMENT_SIZE,
+                    flags_host + segment_number * SEGMENT_SIZE
                 );
+
+                if (bundle.is_on_device())
+                    flags_modified_gpu[segment_number] = true;
+                else
+                    flags_modified_host[segment_number] = true;
+
+                ops.push_back(bundle);
             }
 
             pending_kernels.push_back(ops);
@@ -352,7 +462,9 @@ public:
             for (size_t segment_number = 0; segment_number < segments.size(); segment_number++)
             {
                 const Segment &segment = segments[segment_number];
-                bool on_device = segment.is_on_device() && (literal || (cols[1]->get_segments()[segment_number].is_on_device()));
+                bool on_device =
+                    segment.is_on_device() &&
+                    (literal || (cols[1]->get_segments()[segment_number].is_on_device()));
                 KernelBundle bundle(on_device);
 
                 bundle.add_kernel(
@@ -377,6 +489,12 @@ public:
                             )
                     )
                 );
+
+                if (on_device)
+                    flags_modified_gpu[segment_number] = true;
+                else
+                    flags_modified_host[segment_number] = true;
+
                 ops.push_back(bundle);
             }
 
@@ -839,19 +957,46 @@ public:
                 ht_events.end()
             );
 
-            bool *ht = std::get<0>(ht_data);
+            bool *ht = std::get<0>(ht_data),
+                *ht_other = nullptr;
             int build_min_value = std::get<1>(ht_data),
                 build_max_value = std::get<2>(ht_data);
 
-            bool on_device = std::get<3>(ht_data);
+            bool ht_on_device = std::get<3>(ht_data);
+
+            for (const Segment &seg : current_columns[left_column]->get_segments())
+            {
+                if (ht_on_device && !seg.is_on_device())
+                {
+                    memory_manager &allocator = ht_on_device ? cpu_allocator : gpu_allocator;
+
+                    int ht_len = build_max_value - build_min_value + 1;
+
+                    ht_other = allocator.alloc<bool>(ht_len, true);
+
+                    pending_kernels_dependencies.push_back(
+                        gpu_queue.memcpy(
+                            ht_other,
+                            ht,
+                            ht_len * sizeof(bool),
+                            ht_events
+                        )
+                    );
+
+                    break;
+                }
+            }
 
             pending_kernels.push_back(
                 current_columns[left_column]->semi_join(
-                    on_device ? flags_gpu : flags_host,
+                    flags_gpu,
+                    flags_host,
                     build_min_value,
                     build_max_value,
-                    ht,
-                    on_device
+                    ht_on_device ? ht : ht_other,
+                    ht_on_device ? ht_other : ht,
+                    flags_modified_gpu,
+                    flags_modified_host
                 )
             );
 

@@ -95,6 +95,46 @@ inline bool logical(logical_op logic, bool a, bool b)
     }
 }
 
+class EmptyKernel : public KernelDefinition
+{
+public:
+    EmptyKernel(int len) : KernelDefinition(len) {}
+
+    void operator()() const {}
+};
+
+class CopyFlagsKernel : public KernelDefinition
+{
+protected:
+    bool *flags_src, *flags_dst;
+public:
+    CopyFlagsKernel(bool *src, bool *dst, int len)
+        : KernelDefinition(len), flags_src(src), flags_dst(dst)
+    {}
+
+    bool *get_src() const { return flags_src; }
+    bool *get_dst() const { return flags_dst; }
+
+    void operator()() const {}
+};
+
+class SyncFlagsKernel : public CopyFlagsKernel
+{
+private:
+    bool *tmp_flags;
+public:
+    SyncFlagsKernel(bool *src, bool *dst, bool *tmp, int len)
+        : CopyFlagsKernel(src, dst, len), tmp_flags(tmp)
+    {}
+
+    bool *get_tmp() const { return tmp_flags; }
+
+    void operator()(sycl::id<1> idx) const
+    {
+        flags_dst[idx] = tmp_flags[idx] && flags_dst[idx];
+    }
+};
+
 class LogicalKernel : public KernelDefinition
 {
 private:
