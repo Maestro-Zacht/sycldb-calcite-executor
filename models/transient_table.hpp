@@ -173,9 +173,10 @@ public:
             sycl::event e;
 
             #if USE_FUSION
-            bool need_fusion_gpu = false, need_fusion_cpu = false;
+            bool need_fusion_gpu = false;
+            // bool need_fusion_cpu = false;
             fw_gpu.start_fusion();
-            // fw_cpu.start_fusion();
+            fw_cpu.start_fusion();
             #endif
 
             for (const auto &phases : pending_kernels)
@@ -199,9 +200,9 @@ public:
                 }
                 else
                 {
-                    #if USE_FUSION
-                    need_fusion_cpu = true;
-                    #endif
+                    // #if USE_FUSION
+                    // need_fusion_cpu = true;
+                    // #endif
                     deps_cpu.clear();
                     deps_cpu.push_back(e);
                 }
@@ -220,7 +221,12 @@ public:
             //         fw_cpu.complete_fusion(sycl::ext::codeplay::experimental::property::no_barriers {})
             //     );
             // else
-            // fw_cpu.cancel_fusion();
+            fw_cpu.cancel_fusion();
+            events.insert(
+                events.end(),
+                deps_cpu.begin(),
+                deps_cpu.end()
+            );
             #else
             events.push_back(e);
             #endif

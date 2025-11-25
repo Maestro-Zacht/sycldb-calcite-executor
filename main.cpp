@@ -903,11 +903,11 @@ int data_driven_operator_replacement(int argc, char **argv)
         std::cout << table.get_name() << " num segments: " << table.num_segments() << std::endl;
     }
 
-    // tables[4].move_column_to_device(9);
-    // tables[4].move_column_to_device(11);
+    tables[4].move_column_to_device(9);
+    tables[4].move_column_to_device(11);
     // for (int i = 0; i < MAX_NTABLES; i++)
     //     tables[i].move_all_to_device();
-    // gpu_queue.wait_and_throw();
+    gpu_queue.wait_and_throw();
 
     // #if not PERFORMANCE_MEASUREMENT_ACTIVE
     // std::cout << "All tables moved to device." << std::endl;
