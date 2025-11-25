@@ -285,6 +285,7 @@ public:
                             )
                         );
                     }
+                    flags_modified_host[i] = false;
                 }
                 else
                 {
@@ -329,6 +330,7 @@ public:
                             )
                         );
                     }
+                    flags_modified_gpu[i] = false;
                 }
                 else
                 {
@@ -395,9 +397,12 @@ public:
     {
         bool on_device = true;
 
-        for (const Segment &seg : current_columns[column]->get_segments())
+        const std::vector<Segment> &segments_current = current_columns[column]->get_segments(),
+            &segments_group_by = group_by_column->get_segments();
+
+        for (uint64_t i = 0; i < segments_current.size(); i++)
         {
-            if (!seg.is_on_device())
+            if (!segments_current[i].is_on_device() || !segments_group_by[i].is_on_device())
             {
                 on_device = false;
                 break;
