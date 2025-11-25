@@ -886,6 +886,15 @@ public:
             seg.move_to_device();
     }
 
+    void move_to_device(const std::vector<bool> &segments_choices = {})
+    {
+        for (int i = 0; i < segments.size(); i++)
+        {
+            if (segments_choices.size() <= i || segments_choices[i])
+                segments[i].move_to_device();
+        }
+    }
+
     uint64_t get_data_size(bool gpu_only = false) const
     {
         uint64_t total_size = 0;
@@ -1137,6 +1146,14 @@ public:
     {
         for (auto &col : columns)
             col.move_all_to_device();
+    }
+
+    void move_column_to_device(int col_index, const std::vector<bool> &segments = {})
+    {
+        if (segments.empty())
+            columns[col_index].move_all_to_device();
+        else
+            columns[col_index].move_to_device(segments);
     }
 
     uint64_t num_segments() const

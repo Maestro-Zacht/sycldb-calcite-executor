@@ -159,7 +159,12 @@ public:
             }
         }
 
-        events.reserve(segment_num);
+        events.reserve(
+            segment_num
+            #if USE_FUSION 
+            * 2
+            #endif
+        );
 
         for (uint64_t segment_index = 0; segment_index < segment_num; segment_index++)
         {
@@ -168,7 +173,9 @@ public:
             sycl::event e;
 
             #if USE_FUSION
+            bool need_fusion_gpu = false, need_fusion_cpu = false;
             fw_gpu.start_fusion();
+            // fw_cpu.start_fusion();
             #endif
 
             for (const auto &phases : pending_kernels)
@@ -184,21 +191,39 @@ public:
 
                 if (on_device)
                 {
+                    #if USE_FUSION
+                    need_fusion_gpu = true;
+                    #endif
                     deps_gpu.clear();
                     deps_gpu.push_back(e);
                 }
                 else
                 {
+                    #if USE_FUSION
+                    need_fusion_cpu = true;
+                    #endif
                     deps_cpu.clear();
                     deps_cpu.push_back(e);
                 }
             }
 
             #if USE_FUSION
-            fw_gpu.complete_fusion(sycl::ext::codeplay::experimental::property::no_barriers {});
-            #endif
+            if (need_fusion_gpu)
+                events.push_back(
+                    fw_gpu.complete_fusion(sycl::ext::codeplay::experimental::property::no_barriers {})
+                );
+            else
+                fw_gpu.cancel_fusion();
 
+            // if (need_fusion_cpu)
+            //     events.push_back(
+            //         fw_cpu.complete_fusion(sycl::ext::codeplay::experimental::property::no_barriers {})
+            //     );
+            // else
+            // fw_cpu.cancel_fusion();
+            #else
             events.push_back(e);
+            #endif
         }
 
         pending_kernels.clear();
@@ -207,9 +232,9 @@ public:
         return events;
     }
 
-    std::tuple<bool *, int, int, bool> build_keys_hash_table(int column, memory_manager &gpu_allocator, memory_manager &cpu_allocator)
+    void sync_flags(int column, memory_manager &gpu_allocator, memory_manager &cpu_allocator)
     {
-        bool on_device = true, need_flag_sync = false;
+        bool need_flag_sync = false;
         std::vector<KernelBundle> flag_sync_kernels;
 
         const std::vector<Segment> &segments = current_columns[column]->get_segments();
@@ -267,7 +292,6 @@ public:
             }
             else
             {
-                on_device = false;
                 if (flags_modified_gpu[i])
                 {
                     need_flag_sync = true;
@@ -315,7 +339,34 @@ public:
         }
 
         if (need_flag_sync)
+        {
+            #if not PERFORMANCE_MEASUREMENT_ACTIVE
+            std::cout << "Synchronizing flags" << std::endl;
+            #endif
             pending_kernels.push_back(flag_sync_kernels);
+        }
+        #if not PERFORMANCE_MEASUREMENT_ACTIVE
+        else
+        {
+            std::cout << "No flag synchronization needed" << std::endl;
+        }
+        #endif
+    }
+
+    std::tuple<bool *, int, int, bool> build_keys_hash_table(int column, memory_manager &gpu_allocator, memory_manager &cpu_allocator)
+    {
+        bool on_device = true;
+
+        for (const Segment &seg : current_columns[column]->get_segments())
+        {
+            if (!seg.is_on_device())
+            {
+                on_device = false;
+                break;
+            }
+        }
+
+        sync_flags(column, gpu_allocator, cpu_allocator);
 
         auto ht_res = current_columns[column]->build_keys_hash_table(
             (on_device ? flags_gpu : flags_host),
@@ -709,6 +760,8 @@ public:
                     break;
                 }
             }
+
+            sync_flags(agg.operands[0], gpu_allocator, cpu_allocator);
 
             Column &result_column = materialized_columns.emplace_back(
                 1,

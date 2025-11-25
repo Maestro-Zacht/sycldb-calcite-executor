@@ -615,13 +615,14 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
     Table tables[MAX_NTABLES],
     sycl::queue &gpu_queue,
     sycl::queue &cpu_queue,
+    #if USE_FUSION
+    sycl::ext::codeplay::experimental::fusion_wrapper &fw_gpu,
+    sycl::ext::codeplay::experimental::fusion_wrapper &fw_cpu,
+    #endif
     memory_manager &gpu_allocator,
     memory_manager &cpu_allocator,
     std::ostream &perf_out = std::cout)
 {
-    #if USE_FUSION
-    sycl::ext::codeplay::experimental::fusion_wrapper fw_gpu{ gpu_queue }, fw_cpu{ cpu_queue };
-    #endif
 
     ExecutionInfo exec_info = parse_execution_info(result);
     std::vector<int> output_table(result.rels.size(), -1);
@@ -856,6 +857,10 @@ int data_driven_operator_replacement(int argc, char **argv)
         #endif
     };
 
+    #if USE_FUSION
+    sycl::ext::codeplay::experimental::fusion_wrapper fw_gpu{ gpu_queue }, fw_cpu{ cpu_queue };
+    #endif
+
     if (argc == 2)
     {
         std::ifstream file(argv[1]);
@@ -898,12 +903,14 @@ int data_driven_operator_replacement(int argc, char **argv)
         std::cout << table.get_name() << " num segments: " << table.num_segments() << std::endl;
     }
 
-    for (int i = 0; i < MAX_NTABLES; i++)
-        tables[i].move_all_to_device();
-    gpu_queue.wait();
+    // tables[4].move_column_to_device(9);
+    // tables[4].move_column_to_device(11);
+    // for (int i = 0; i < MAX_NTABLES; i++)
+    //     tables[i].move_all_to_device();
+    // gpu_queue.wait_and_throw();
 
     // #if not PERFORMANCE_MEASUREMENT_ACTIVE
-    std::cout << "All tables moved to device." << std::endl;
+    // std::cout << "All tables moved to device." << std::endl;
 
     uint64_t total_mem = 0, total_gpu_mem = 0;
     for (int i = 0; i < MAX_NTABLES; i++)
@@ -941,7 +948,20 @@ int data_driven_operator_replacement(int argc, char **argv)
 
             auto start = std::chrono::high_resolution_clock::now();
             client.parse(result, sql);
-            auto exec_time = ddor_execute_result(result, argv[1], tables, gpu_queue, cpu_queue, gpu_allocator, cpu_allocator, perf_file);
+            auto exec_time = ddor_execute_result(
+                result,
+                argv[1],
+                tables,
+                gpu_queue,
+                cpu_queue,
+                #if USE_FUSION
+                fw_gpu,
+                fw_cpu,
+                #endif
+                gpu_allocator,
+                cpu_allocator,
+                perf_file
+            );
             auto end = std::chrono::high_resolution_clock::now();
             std::chrono::duration<double, std::milli> total_time = end - start;
 
@@ -955,13 +975,28 @@ int data_driven_operator_replacement(int argc, char **argv)
                 << " - " << exec_time.count() << " ms - "
                 << total_time.count() << " ms - " << after_reset.count() << " ms" << std::endl;
             // perf_file << total_time.count() << '\n';
+
+            gpu_queue.wait_and_throw();
+            cpu_queue.wait_and_throw();
         }
         perf_file.close();
         #else
         PlanResult result;
         client.parse(result, sql);
 
-        auto time = ddor_execute_result(result, argv[1], tables, gpu_queue, cpu_queue, gpu_allocator, cpu_allocator);
+        auto time = ddor_execute_result(
+            result,
+            argv[1],
+            tables,
+            gpu_queue,
+            cpu_queue,
+            #if USE_FUSION
+            fw_gpu,
+            fw_cpu,
+            #endif
+            gpu_allocator,
+            cpu_allocator
+        );
         std::cout << "DDOR execution completed in " << time.count() << " ms." << std::endl;
 
         #endif
@@ -1003,66 +1038,41 @@ int test()
         sycl::ext::codeplay::experimental::property::queue::enable_fusion {}
         #endif
     };
-    sycl::ext::codeplay::experimental::fusion_wrapper fw{ gpu_queue };
 
     uint64_t N = ((uint64_t)1 << 30);
 
-    int *data_gpu = sycl::malloc_shared<int>(N, gpu_queue);
+    int *data_gpu = sycl::malloc_device<int>(N, gpu_queue);
+    int *data_cpu = sycl::malloc_device<int>(N, cpu_queue);
 
-    uint64_t *result = sycl::malloc_shared<uint64_t>(1, gpu_queue);
-    gpu_queue.memset(result, 0, sizeof(uint64_t));
+    auto e1 = gpu_queue.fill<int>(data_gpu, 1, N);
+    auto e2 = cpu_queue.fill<int>(data_cpu, 2, N);
 
-    fw.start_fusion();
+    auto e = gpu_queue.memcpy(data_cpu, data_gpu, N * sizeof(int), { e1, e2 });
 
-    auto e = gpu_queue.parallel_for(
-        sycl::range<1>(N),
-        [=](sycl::id<1> idx)
-        {
-            data_gpu[idx] = idx[0] + 1;
-        }
-    );
+    uint64_t *sum_result = sycl::malloc_shared<uint64_t>(1, cpu_queue);
+    *sum_result = 0;
 
-    auto e2 = gpu_queue.submit(
+    cpu_queue.submit(
         [&](sycl::handler &cgh)
         {
             cgh.depends_on(e);
             cgh.parallel_for(
                 sycl::range<1>(N),
-                [=](sycl::id<1> idx)
+                sycl::reduction(sum_result, sycl::plus<>()),
+                [=](sycl::id<1> idx, auto &sum)
                 {
-                    data_gpu[idx] -= 1;
-                }
-            );
-        });
 
-    gpu_queue.submit(
-        [&](sycl::handler &cgh)
-        {
-            cgh.depends_on(e2);
-            cgh.parallel_for(
-                sycl::range<1>(N),
-                [=](sycl::id<1> idx)
-                {
-                    sycl::atomic_ref<uint64_t,
-                    sycl::memory_order::relaxed,
-                    sycl::memory_scope::device,
-                    sycl::access::address_space::global_space> atomic_result(*result);
-            atomic_result.fetch_add(data_gpu[idx]);
+                    sum.combine(data_cpu[idx[0]]);
                 }
             );
         }
-    );
+    ).wait();
 
-    fw.complete_fusion(sycl::ext::codeplay::experimental::property::no_barriers {});
-
-    gpu_queue.wait();
-
-    uint64_t expected_sum = ((N * (N - 1)) / 2);
-
-    std::cout << "Computed sum: " << *result << ", Expected sum: " << expected_sum << ", Equal: " << (expected_sum == *result) << std::endl;
+    std::cout << "Sum result: " << *sum_result << " - expected: " << N << " - equal: " << (*sum_result == N) << std::endl;
 
     sycl::free(data_gpu, gpu_queue);
-    sycl::free(result, gpu_queue);
+    sycl::free(data_cpu, cpu_queue);
+    sycl::free(sum_result, cpu_queue);
 
     return 0;
 }
