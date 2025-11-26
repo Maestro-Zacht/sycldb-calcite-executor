@@ -904,7 +904,7 @@ int data_driven_operator_replacement(int argc, char **argv)
     }
 
     tables[4].move_column_to_device(9);
-    tables[4].move_column_to_device(11);
+    tables[4].move_column_to_device(11, { false, true, false });
     // for (int i = 0; i < MAX_NTABLES; i++)
     //     tables[i].move_all_to_device();
     gpu_queue.wait_and_throw();

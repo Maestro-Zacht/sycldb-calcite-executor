@@ -90,6 +90,8 @@ public:
         sycl::queue gpu_queue,
         sycl::queue cpu_queue,
         memory_manager &cpu_allocator,
+        memory_manager &gpu_allocator,
+        bool on_device,
         bool is_aggregate_result,
         uint64_t count = SEGMENT_SIZE
     )
@@ -97,7 +99,7 @@ public:
         nrows(count),
         gpu_queue(gpu_queue),
         cpu_queue(cpu_queue),
-        on_device(false),
+        on_device(on_device),
         is_aggregate_result(is_aggregate_result),
         is_materialized(true),
         dirty_cache(false)
@@ -111,18 +113,18 @@ public:
         if (is_aggregate_result)
         {
             data_host = reinterpret_cast<int *>(cpu_allocator.alloc<uint64_t>(count, true));
-            //     if (on_device)
-            //         data_device = reinterpret_cast<int *>(gpu_allocator.alloc<uint64_t>(count));
-            //     else
-            //         data_device = nullptr;
+            if (on_device)
+                data_device = reinterpret_cast<int *>(gpu_allocator.alloc<uint64_t>(count, true));
+            else
+                data_device = nullptr;
         }
         else
         {
             data_host = cpu_allocator.alloc<int>(count, true);
-            //     if (on_device)
-            //         data_device = gpu_allocator.alloc<int>(count);
-            //     else
-            //         data_device = nullptr;
+            if (on_device)
+                data_device = gpu_allocator.alloc<int>(count, true);
+            else
+                data_device = nullptr;
         }
         // min = 0;
         // max = 0;
@@ -222,15 +224,6 @@ public:
             }
             // std::cout << "Segment free completed" << std::endl;
         }
-    }
-
-    void build_on_device(memory_manager &allocator)
-    {
-        if (on_device)
-            return;
-
-        on_device = true;
-        data_device = allocator.alloc<int>(nrows, true);
     }
 
     FillKernel *fill_with_literal(int literal, bool fill_on_device)
@@ -729,19 +722,21 @@ public:
         sycl::queue &gpu_queue,
         sycl::queue &cpu_queue,
         memory_manager &cpu_allocator,
+        memory_manager &gpu_allocator,
+        bool on_device,
         bool is_aggregate_result)
         : is_aggregate_result(is_aggregate_result)
     {
-        uint64_t full_segments = nrows / SEGMENT_SIZE;
-        uint64_t remainder = nrows % SEGMENT_SIZE;
+        uint64_t full_segments = nrows / SEGMENT_SIZE,
+            remainder = nrows % SEGMENT_SIZE;
 
         segments.reserve(full_segments + (remainder > 0));
 
         for (uint64_t i = 0; i < full_segments; i++)
-            segments.emplace_back(gpu_queue, cpu_queue, cpu_allocator, is_aggregate_result);
+            segments.emplace_back(gpu_queue, cpu_queue, cpu_allocator, gpu_allocator, on_device, is_aggregate_result);
 
         if (remainder > 0)
-            segments.emplace_back(gpu_queue, cpu_queue, cpu_allocator, is_aggregate_result, remainder);
+            segments.emplace_back(gpu_queue, cpu_queue, cpu_allocator, gpu_allocator, on_device, is_aggregate_result, remainder);
     }
 
     Column(
@@ -865,9 +860,6 @@ public:
         for (auto &seg : segments)
         {
             KernelBundle bundle(fill_on_device);
-            if (fill_on_device)
-                seg.build_on_device(gpu_allocator);
-
             bundle.add_kernel(
                 KernelData(
                     KernelType::FillKernel,
@@ -1036,6 +1028,8 @@ public:
             gpu_queue,
             cpu_queue,
             cpu_allocator,
+            gpu_allocator,
+            on_device,
             false
         );
 
@@ -1046,9 +1040,6 @@ public:
             const Segment &seg = segments[i];
             Segment &new_seg = new_column.segments[i];
             KernelBundle bundle(on_device);
-
-            if (on_device)
-                new_seg.build_on_device(gpu_allocator);
 
             bundle.add_kernel(
                 KernelData(
