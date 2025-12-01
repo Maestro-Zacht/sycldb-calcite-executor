@@ -102,7 +102,7 @@ public:
         on_device(on_device),
         is_aggregate_result(is_aggregate_result),
         is_materialized(true),
-        dirty_cache(false)
+        dirty_cache(true)
     {
         if (count > SEGMENT_SIZE)
         {
@@ -327,6 +327,11 @@ public:
 
     sycl::event move_to_device()
     {
+        if (is_materialized || is_aggregate_result)
+        {
+            std::cerr << "Segment move_to_device: cannot move materialized or aggregate result segment to device" << std::endl;
+            throw std::runtime_error("Segment move_to_device: cannot move materialized or aggregate result segment to device");
+        }
         if (on_device)
             return sycl::event();
 
@@ -341,7 +346,7 @@ public:
     {
         sycl::event e;
 
-        if (on_device && dirty_cache)
+        if (on_device && dirty_cache && is_materialized)
         {
             if (is_aggregate_result)
                 e = gpu_queue.memcpy(
@@ -358,6 +363,21 @@ public:
             e = sycl::event();
 
         return e;
+    }
+
+    bool needs_copy_on(bool device) const
+    {
+        return device != on_device && is_materialized && dirty_cache;
+    }
+
+    CopyKernel *copy_kernel_on(bool device) const
+    {
+        return new CopyKernel(
+            device ? data_host : data_device,
+            device ? data_device : data_host,
+            nrows,
+            is_aggregate_result ? sizeof(uint64_t) : sizeof(int)
+        );
     }
 
     KernelBundle search_operator(
@@ -917,6 +937,38 @@ public:
         for (const auto &seg : segments)
             total_size += seg.get_data_size(gpu_only);
         return total_size;
+    }
+
+    std::pair<std::vector<KernelBundle>, bool> ensure_data_on(bool device) const
+    {
+        bool needs_copy = false;
+        std::vector<KernelBundle> bundles;
+        bundles.reserve(segments.size());
+
+        for (const auto &seg : segments)
+        {
+            KernelBundle bundle(device);
+            if (seg.needs_copy_on(device))
+            {
+                needs_copy = true;
+                bundle.add_kernel(
+                    KernelData(
+                        KernelType::CopyKernel,
+                        seg.copy_kernel_on(device)
+                    )
+                );
+            }
+            else
+                bundle.add_kernel(
+                    KernelData(
+                        KernelType::EmptyKernel,
+                        new EmptyKernel(1)
+                    )
+                );
+            bundles.push_back(std::move(bundle));
+        }
+
+        return { bundles, needs_copy };
     }
 
     std::tuple<bool *, int, int, std::vector<KernelBundle>> build_keys_hash_table(bool *flags, memory_manager &allocator, bool on_device) const

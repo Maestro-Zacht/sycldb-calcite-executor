@@ -120,7 +120,7 @@ public:
     {
         for (uint64_t i = 0; i < table.nrows; i++)
         {
-            if (table.flags_host[i]) // TODO ensure flags are sync'd
+            if (table.flags_host[i])
             {
                 for (uint64_t j = 0; j < table.current_columns.size(); j++)
                 {
@@ -269,11 +269,12 @@ public:
                     {
                         bundle.add_kernel(
                             KernelData(
-                                KernelType::CopyFlagsKernel,
-                                new CopyFlagsKernel(
+                                KernelType::CopyKernel,
+                                new CopyKernel(
                                     flags_host + i * SEGMENT_SIZE,
                                     flags_gpu + i * SEGMENT_SIZE,
-                                    seg.get_nrows()
+                                    seg.get_nrows(),
+                                    sizeof(bool)
                                 )
                             )
                         );
@@ -314,11 +315,12 @@ public:
                     {
                         bundle.add_kernel(
                             KernelData(
-                                KernelType::CopyFlagsKernel,
-                                new CopyFlagsKernel(
+                                KernelType::CopyKernel,
+                                new CopyKernel(
                                     flags_gpu + i * SEGMENT_SIZE,
                                     flags_host + i * SEGMENT_SIZE,
-                                    seg.get_nrows()
+                                    seg.get_nrows(),
+                                    sizeof(bool)
                                 )
                             )
                         );
@@ -390,11 +392,12 @@ public:
                     {
                         bundle.add_kernel(
                             KernelData(
-                                KernelType::CopyFlagsKernel,
-                                new CopyFlagsKernel(
+                                KernelType::CopyKernel,
+                                new CopyKernel(
                                     flags_host + i * SEGMENT_SIZE,
                                     flags_gpu + i * SEGMENT_SIZE,
-                                    seg_size
+                                    seg_size,
+                                    sizeof(bool)
                                 )
                             )
                         );
@@ -435,11 +438,12 @@ public:
                     {
                         bundle.add_kernel(
                             KernelData(
-                                KernelType::CopyFlagsKernel,
-                                new CopyFlagsKernel(
+                                KernelType::CopyKernel,
+                                new CopyKernel(
                                     flags_gpu + i * SEGMENT_SIZE,
                                     flags_host + i * SEGMENT_SIZE,
-                                    seg_size
+                                    seg_size,
+                                    sizeof(bool)
                                 )
                             )
                         );
@@ -939,8 +943,8 @@ public:
         }
         else
         {
-            const std::vector<Segment> &agg_segments = current_columns[agg.operands[0]]->get_segments();
-            bool on_device = current_columns[agg.operands[0]]->is_all_on_device();
+            const Column *agg_column = current_columns[agg.operands[0]];
+            bool on_device = agg_column->is_all_on_device();
             for (int i = 0; i < group.size() && on_device; i++)
                 on_device = current_columns[group[i]]->is_all_on_device();
 
@@ -948,6 +952,12 @@ public:
             std::cout << "Applying group-by aggregate on "
                 << (on_device ? "GPU" : "CPU") << std::endl;
             #endif
+
+            update_flags(on_device, gpu_allocator, cpu_allocator);
+
+            auto agg_col_sync_data = agg_column->ensure_data_on(on_device);
+            if (agg_col_sync_data.second)
+                pending_kernels.push_back(agg_col_sync_data.first);
 
             memory_manager &allocator = on_device ? gpu_allocator : cpu_allocator;
 
@@ -971,6 +981,8 @@ public:
 
             for (int i = 0; i < group.size(); i++)
                 results[i] = allocator.alloc<int>(prod_ranges, true);
+
+            const std::vector<Segment> &agg_segments = agg_column->get_segments();
 
             agg_bundles.reserve(agg_segments.size());
 

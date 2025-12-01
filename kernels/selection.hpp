@@ -103,35 +103,39 @@ public:
     void operator()() const {}
 };
 
-class CopyFlagsKernel : public KernelDefinition
+class CopyKernel : public KernelDefinition
 {
 protected:
-    bool *flags_src, *flags_dst;
+    void *src, *dst;
+    int size;
 public:
-    CopyFlagsKernel(bool *src, bool *dst, int len)
-        : KernelDefinition(len), flags_src(src), flags_dst(dst)
+    CopyKernel(void *src, void *dst, int len, int size)
+        : KernelDefinition(len), src(src), dst(dst), size(size)
     {}
 
-    bool *get_src() const { return flags_src; }
-    bool *get_dst() const { return flags_dst; }
+    void *get_src() const { return src; }
+    void *get_dst() const { return dst; }
+    uint64_t get_size() const { return size; }
 
     void operator()() const {}
 };
 
-class SyncFlagsKernel : public CopyFlagsKernel
+class SyncFlagsKernel : public CopyKernel
 {
 private:
     bool *tmp_flags;
 public:
     SyncFlagsKernel(bool *src, bool *dst, bool *tmp, int len)
-        : CopyFlagsKernel(src, dst, len), tmp_flags(tmp)
+        : CopyKernel(src, dst, len, sizeof(bool)), tmp_flags(tmp)
     {}
 
     bool *get_tmp() const { return tmp_flags; }
+    bool *get_src() const { return static_cast<bool *>(src); }
+    bool *get_dst() const { return static_cast<bool *>(dst); }
 
     void operator()(sycl::id<1> idx) const
     {
-        flags_dst[idx] = tmp_flags[idx] && flags_dst[idx];
+        get_dst()[idx] = tmp_flags[idx] && get_dst()[idx];
     }
 };
 

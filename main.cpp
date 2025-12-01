@@ -420,12 +420,12 @@ std::chrono::duration<double, std::milli> execute_result(
             }
         }
 
-        // if (rel.relOp != RelNodeType::TABLE_SCAN)
-        // {
-        //     std::cout << "rows selected after operation " << id << ": "
-        //         << count_true_flags(tables[output_table[id]].flags, tables[output_table[id]].col_len, queue, dependencies[id])
-        //         << std::endl;
-        // }
+        if (rel.relOp != RelNodeType::TABLE_SCAN)
+        {
+            std::cout << "rows selected after operation " << id << ": "
+                << count_true_flags(tables[output_table[id]].flags, tables[output_table[id]].col_len, queue, dependencies[id])
+                << std::endl;
+        }
     }
 
     #if USE_FUSION
@@ -458,13 +458,13 @@ std::chrono::duration<double, std::milli> execute_result(
         {
             if (final_table.columns[i].is_aggregate_result)
             {
-                uint64_t *host_col = final_table_allocator.alloc<uint64_t>(final_table.col_len, true);
+                uint64_t *host_col = final_table_allocator.alloc<uint64_t>(final_table.col_len, false);
                 queue.copy((uint64_t *)final_table.columns[i].content, host_col, final_table.col_len).wait();
                 final_table.columns[i].content = (int *)host_col;
             }
             else
             {
-                int *host_col = final_table_allocator.alloc<int>(final_table.col_len, true);
+                int *host_col = final_table_allocator.alloc<int>(final_table.col_len, false);
                 queue.copy(final_table.columns[i].content, host_col, final_table.col_len).wait();
                 final_table.columns[i].content = host_col;
             }
@@ -473,7 +473,7 @@ std::chrono::duration<double, std::milli> execute_result(
             std::cout << "!!!!!!!!!! Column " << i << " does not have ownership, skipping copy to host !!!!!!!!!!" << std::endl;
     }
 
-    bool *host_flags = final_table_allocator.alloc<bool>(final_table.col_len, true);
+    bool *host_flags = final_table_allocator.alloc<bool>(final_table.col_len, false);
     queue.copy(final_table.flags, host_flags, final_table.col_len).wait();
     final_table.flags = host_flags;
 
@@ -509,7 +509,7 @@ int normal_execution(int argc, char **argv)
     CalciteServerClient client(protocol);
     std::string sql;
     sycl::queue queue{
-        sycl::cpu_selector_v,
+        sycl::gpu_selector_v,
         #if USE_FUSION
         sycl::ext::codeplay::experimental::property::queue::enable_fusion {}
         #endif
@@ -919,6 +919,7 @@ int data_driven_operator_replacement(int argc, char **argv)
 
     tables[4].move_column_to_device(4);
     tables[4].move_column_to_device(12);
+    tables[4].move_column_to_device(13);
     // for (int i = 0; i < MAX_NTABLES; i++)
     //     tables[i].move_all_to_device();
     gpu_queue.wait_and_throw();

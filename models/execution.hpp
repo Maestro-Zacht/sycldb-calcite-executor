@@ -25,7 +25,7 @@ enum class KernelType : uint8_t
     AggregateOperationKernel,
     GroupByAggregateKernel,
     SyncFlagsKernel,
-    CopyFlagsKernel,
+    CopyKernel,
 };
 
 class KernelData
@@ -272,15 +272,16 @@ public:
                 }
             );
         }
-        case KernelType::CopyFlagsKernel:
+        case KernelType::CopyKernel:
         {
-            CopyFlagsKernel *kernel = static_cast<CopyFlagsKernel *>(kernel_def.get());
+            CopyKernel *kernel = static_cast<CopyKernel *>(kernel_def.get());
 
-            bool *src = kernel->get_src();
-            bool *dst = kernel->get_dst();
+            void *src = kernel->get_src();
+            void *dst = kernel->get_dst();
             int len = kernel->get_col_len();
+            int size = kernel->get_size();
 
-            return gpu_queue.memcpy(dst, src, len * sizeof(bool), on_device ? cpu_dependencies : gpu_dependencies);
+            return gpu_queue.memcpy(dst, src, len * size, on_device ? cpu_dependencies : gpu_dependencies);
         }
         default:
             std::cerr << "Unknown kernel type in KernelData::execute()" << std::endl;
