@@ -49,6 +49,12 @@ public:
         sycl::queue queue = on_device ? gpu_queue : cpu_queue;
         const std::vector<sycl::event> &dependencies = on_device ? gpu_dependencies : cpu_dependencies;
 
+        // std::cout << "  - Executing kernel of type "
+        //     << static_cast<int>(kernel_type)
+        //     << " on "
+        //     << (on_device ? "GPU" : "CPU")
+        //     << std::endl;
+
         switch (kernel_type)
         {
         case KernelType::EmptyKernel:
@@ -274,7 +280,7 @@ public:
             bool *dst = kernel->get_dst();
             int len = kernel->get_col_len();
 
-            return queue.memcpy(dst, src, len * sizeof(bool), dependencies);
+            return gpu_queue.memcpy(dst, src, len * sizeof(bool), on_device ? cpu_dependencies : gpu_dependencies);
         }
         default:
             std::cerr << "Unknown kernel type in KernelData::execute()" << std::endl;
@@ -322,6 +328,8 @@ public:
                 on_device ? cpu_dependencies : deps,
                 on_device
             );
+            // e.wait();
+            // std::cout << "    - Kernel executed" << std::endl;
             deps.clear();
             deps.push_back(e);
         }

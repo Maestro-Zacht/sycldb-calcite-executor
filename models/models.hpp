@@ -629,12 +629,19 @@ public:
         const bool *flags,
         int ht_len,
         int ht_min_value,
+        bool build_on_device,
         const Segment &value_segment) const
     {
+        if (build_on_device && (!on_device || !value_segment.on_device))
+        {
+            std::cerr << "Build key-vals hash table: Mismatched segment locations between columns" << std::endl;
+            throw std::runtime_error("Build key-vals hash table: Mismatched segment locations between columns");
+        }
+
         return new BuildKeyValsHTKernel(
             ht,
-            on_device ? data_device : data_host,
-            value_segment.on_device ? value_segment.data_device : value_segment.data_host,
+            build_on_device ? data_device : data_host,
+            build_on_device ? value_segment.data_device : value_segment.data_host,
             flags,
             ht_len,
             ht_min_value,
@@ -647,12 +654,19 @@ public:
         bool *probe_flags,
         const int *ht,
         int ht_min_value,
-        int ht_max_value
+        int ht_max_value,
+        bool ht_on_device
     ) const
     {
+        if (ht_on_device && (!on_device || !result_segment.on_device))
+        {
+            std::cerr << "Full join: Mismatched segment locations between columns" << std::endl;
+            throw std::runtime_error("Full join: Mismatched segment locations between columns");
+        }
+
         return new FullJoinKernel(
-            on_device ? data_device : data_host,
-            result_segment.on_device ? result_segment.data_device : result_segment.data_host,
+            ht_on_device ? data_device : data_host,
+            ht_on_device ? result_segment.data_device : result_segment.data_host,
             probe_flags,
             ht,
             ht_min_value,
@@ -816,6 +830,16 @@ public:
     const std::vector<Segment> &get_segments() const { return segments; }
     std::vector<Segment> &get_segments() { return segments; }
     bool get_is_aggregate_result() const { return is_aggregate_result; }
+
+    bool is_all_on_device() const
+    {
+        for (const auto &seg : segments)
+        {
+            if (!seg.is_on_device())
+                return false;
+        }
+        return true;
+    }
 
     std::pair<int, int> get_min_max() const
     {
@@ -998,6 +1022,7 @@ public:
                         flags + i * SEGMENT_SIZE,
                         ht_len,
                         min_value,
+                        on_device,
                         vals_column->segments[i]
                     )
                 )
@@ -1017,8 +1042,8 @@ public:
         const int *build_ht,
         memory_manager &gpu_allocator,
         memory_manager &cpu_allocator,
-        sycl::queue &gpu_queue,
-        sycl::queue &cpu_queue,
+        sycl::queue gpu_queue,
+        sycl::queue cpu_queue,
         bool on_device) const
     {
         std::vector<KernelBundle> ops;
@@ -1049,7 +1074,8 @@ public:
                         probe_flags + i * SEGMENT_SIZE,
                         build_ht,
                         build_min_value,
-                        build_max_value
+                        build_max_value,
+                        on_device
                     )
                 )
             );

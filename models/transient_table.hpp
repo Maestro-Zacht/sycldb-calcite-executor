@@ -15,11 +15,10 @@
 uint64_t count_true_flags(
     const bool *flags,
     int len,
-    sycl::queue &queue,
+    sycl::queue queue,
     const std::vector<sycl::event> &dependencies = {})
 {
     uint64_t *count = sycl::malloc_shared<uint64_t>(1, queue);
-    *count = 0;
 
     queue.submit(
         [&](sycl::handler &cgh)
@@ -27,7 +26,11 @@ uint64_t count_true_flags(
             cgh.depends_on(dependencies);
             cgh.parallel_for(
                 sycl::range<1>(len),
-                sycl::reduction(count, sycl::plus<>()),
+                sycl::reduction(
+                    count,
+                    sycl::plus<>(),
+                    sycl::property::reduction::initialize_to_identity()
+                ),
                 [=](sycl::id<1> idx, auto &sum)
                 {
                     if (flags[idx[0]])
@@ -113,17 +116,6 @@ public:
         group_by_column_index = col;
     }
 
-    void copy_flags_to_host()
-    {
-        gpu_queue.copy(flags_gpu, flags_host, nrows).wait();
-    }
-
-    uint64_t count_flags_true(std::vector<sycl::event> dependencies = {})
-    {
-        return count_true_flags(flags_gpu, nrows, gpu_queue, dependencies);
-    }
-
-
     friend std::ostream &operator<<(std::ostream &out, const TransientTable &table)
     {
         for (uint64_t i = 0; i < table.nrows; i++)
@@ -183,6 +175,7 @@ public:
             {
                 const KernelBundle &bundle = phases[segment_index];
                 bool on_device = bundle.is_on_device();
+
                 e = bundle.execute(
                     gpu_queue,
                     cpu_queue,
@@ -371,7 +364,7 @@ public:
 
         for (uint64_t i = 0; i < segment_num; i++)
         {
-            uint64_t seg_size = (i < segment_num - 1) ? SEGMENT_SIZE : (nrows - i * SEGMENT_SIZE);
+            uint64_t seg_size = (i == segment_num - 1) ? (nrows - i * SEGMENT_SIZE) : SEGMENT_SIZE;
             KernelBundle bundle(to_device);
             if (to_device)
             {
@@ -482,18 +475,33 @@ public:
         #endif
     }
 
-    std::tuple<bool *, int, int, bool> build_keys_hash_table(int column, memory_manager &gpu_allocator, memory_manager &cpu_allocator)
+    void assert_flags_to_cpu()
     {
-        bool on_device = true;
-
-        for (const Segment &seg : current_columns[column]->get_segments())
+        for (bool modified : flags_modified_gpu)
         {
-            if (!seg.is_on_device())
+            if (modified)
             {
-                on_device = false;
-                break;
+                std::cerr << "Flags on GPU modified but expected to be on CPU." << std::endl;
+                throw std::runtime_error("Flags on GPU modified but expected to be on CPU.");
             }
         }
+    }
+
+    uint64_t count_flags_true(bool on_device, memory_manager &gpu_allocator, memory_manager &cpu_allocator)
+    {
+        update_flags(on_device, gpu_allocator, cpu_allocator);
+        std::vector<sycl::event> dependencies = execute_pending_kernels();
+        return count_true_flags(
+            on_device ? flags_gpu : flags_host,
+            nrows,
+            on_device ? gpu_queue : cpu_queue,
+            dependencies
+        );
+    }
+
+    std::tuple<bool *, int, int, bool> build_keys_hash_table(int column, memory_manager &gpu_allocator, memory_manager &cpu_allocator)
+    {
+        bool on_device = current_columns[column]->is_all_on_device();
 
         sync_flags(column, gpu_allocator, cpu_allocator);
 
@@ -514,22 +522,8 @@ public:
         );
     }
 
-    std::tuple<int *, int, int, bool> build_key_vals_hash_table(int column, memory_manager &gpu_allocator, memory_manager &cpu_allocator)
+    std::tuple<int *, int, int> build_key_vals_hash_table(int column, bool on_device, memory_manager &gpu_allocator, memory_manager &cpu_allocator)
     {
-        bool on_device = true;
-
-        const std::vector<Segment> &segments_current = current_columns[column]->get_segments(),
-            &segments_group_by = group_by_column->get_segments();
-
-        for (uint64_t i = 0; i < segments_current.size(); i++)
-        {
-            if (!segments_current[i].is_on_device() || !segments_group_by[i].is_on_device())
-            {
-                on_device = false;
-                break;
-            }
-        }
-
         update_flags(on_device, gpu_allocator, cpu_allocator);
 
         auto ht_res = current_columns[column]->build_key_vals_hash_table(
@@ -545,8 +539,7 @@ public:
         return std::make_tuple(
             std::get<0>(ht_res),
             std::get<1>(ht_res),
-            std::get<2>(ht_res),
-            on_device
+            std::get<2>(ht_res)
         );
     }
 
@@ -741,20 +734,8 @@ public:
 
                 bool on_device = true;
                 for (const auto &operand : expr.operands)
-                {
                     if (operand.exprType == ExprOption::COLUMN && on_device)
-                    {
-                        const std::vector<Segment> &segments = current_columns[operand.input]->get_segments();
-                        for (const Segment &seg : segments)
-                        {
-                            if (!seg.is_on_device())
-                            {
-                                on_device = false;
-                                break;
-                            }
-                        }
-                    }
-                }
+                        on_device = current_columns[operand.input]->is_all_on_device();
 
                 Column &new_col = materialized_columns.emplace_back(
                     nrows,
@@ -894,15 +875,7 @@ public:
         {
             const std::vector<Segment> &input_segments = current_columns[agg.operands[0]]->get_segments();
 
-            bool on_device = true;
-            for (const Segment &seg : input_segments)
-            {
-                if (!seg.is_on_device())
-                {
-                    on_device = false;
-                    break;
-                }
-            }
+            bool on_device = current_columns[agg.operands[0]]->is_all_on_device();
 
             std::cout << "Applying aggregate on "
                 << (on_device ? "GPU" : "CPU")
@@ -956,6 +929,9 @@ public:
             flags_gpu = new_gpu_flags;
             flags_host = new_cpu_flags;
 
+            flags_modified_gpu = { false };
+            flags_modified_host = { false };
+
             nrows = 1;
 
             current_columns.clear();
@@ -964,16 +940,14 @@ public:
         else
         {
             const std::vector<Segment> &agg_segments = current_columns[agg.operands[0]]->get_segments();
+            bool on_device = current_columns[agg.operands[0]]->is_all_on_device();
+            for (int i = 0; i < group.size() && on_device; i++)
+                on_device = current_columns[group[i]]->is_all_on_device();
 
-            bool on_device = true;
-            for (const Segment &seg : agg_segments)
-            {
-                if (!seg.is_on_device())
-                {
-                    on_device = false;
-                    break;
-                }
-            }
+            #if not PERFORMANCE_MEASUREMENT_ACTIVE
+            std::cout << "Applying group-by aggregate on "
+                << (on_device ? "GPU" : "CPU") << std::endl;
+            #endif
 
             memory_manager &allocator = on_device ? gpu_allocator : cpu_allocator;
 
@@ -1121,6 +1095,10 @@ public:
             flags_host = new_cpu_flags;
 
             nrows = prod_ranges;
+
+            uint64_t segment_num = nrows / SEGMENT_SIZE + (nrows % SEGMENT_SIZE > 0);
+            flags_modified_gpu = std::vector<bool>(segment_num, false);
+            flags_modified_host = std::vector<bool>(segment_num, false);
         }
     }
 
@@ -1144,6 +1122,10 @@ public:
 
         if (rel.joinType == "semi")
         {
+            #if not PERFORMANCE_MEASUREMENT_ACTIVE
+            std::cout << "Applying semi-join" << std::endl;
+            #endif
+
             auto ht_data = right_table.build_keys_hash_table(
                 right_column,
                 gpu_allocator,
@@ -1205,8 +1187,23 @@ public:
         }
         else
         {
+            #if not PERFORMANCE_MEASUREMENT_ACTIVE
+            std::cout << "Applying full join" << std::endl;
+            #endif
+
+            bool on_device = right_table.current_columns[right_column]->is_all_on_device() &&
+                right_table.group_by_column->is_all_on_device() &&
+                current_columns[left_column]->is_all_on_device();
+
+            #if not PERFORMANCE_MEASUREMENT_ACTIVE
+            std::cout << "Join hash table will be built on "
+                << (on_device ? "GPU" : "CPU")
+                << std::endl;
+            #endif
+
             auto ht_data = right_table.build_key_vals_hash_table(
                 right_column,
+                on_device,
                 gpu_allocator,
                 cpu_allocator
             );
@@ -1222,7 +1219,7 @@ public:
             int *ht = std::get<0>(ht_data);
             int build_min_value = std::get<1>(ht_data),
                 build_max_value = std::get<2>(ht_data);
-            bool on_device = std::get<3>(ht_data);
+            update_flags(on_device, gpu_allocator, cpu_allocator);
 
             auto min_max_gb = right_table.group_by_column->get_min_max();
 
@@ -1250,6 +1247,9 @@ public:
             materialized_columns.push_back(std::move(join_data.second));
 
             current_columns[group_by_col_index] = &materialized_columns[materialized_columns.size() - 1];
+
+            std::vector<bool> &flags_modified = on_device ? flags_modified_gpu : flags_modified_host;
+            std::fill(flags_modified.begin(), flags_modified.end(), true);
         }
     }
 };

@@ -797,10 +797,17 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
             std::cerr << "RelNodeType " << rel.relOp << " not yet supported in DDOR." << std::endl;
             break;
         }
+
         // if (rel.relOp != RelNodeType::TABLE_SCAN)
         // {
-        //     std::cout << "rows selected after operation " << id << ": "
-        //         << transient_tables[output_table[id]].count_flags_true(dependencies[id]) << std::endl;
+        //     uint64_t rows_selected_gpu = transient_tables[output_table[id]].count_flags_true(true, gpu_allocator, cpu_allocator),
+        //         rows_selected_cpu = transient_tables[output_table[id]].count_flags_true(false, gpu_allocator, cpu_allocator);
+        //     std::cout << "== rows selected after operation " << id
+        //         << "\n==== GPU: "
+        //         << rows_selected_gpu
+        //         << "\n==== CPU: "
+        //         << rows_selected_cpu
+        //         << std::endl;
         // }
     }
 
@@ -828,7 +835,11 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
     #else
     TransientTable &final_table = transient_tables[output_table[result.rels.size() - 1]];
 
-    final_table.copy_flags_to_host();
+    final_table.update_flags(false, gpu_allocator, cpu_allocator);
+    final_table.execute_pending_kernels();
+    gpu_queue.wait();
+    cpu_queue.wait();
+    final_table.assert_flags_to_cpu();
     // std::cout << "Final result:\n" << final_table << std::endl;
     save_result(final_table, data_path);
     #endif
@@ -903,13 +914,16 @@ int data_driven_operator_replacement(int argc, char **argv)
         std::cout << table.get_name() << " num segments: " << table.num_segments() << std::endl;
     }
 
-    tables[4].move_column_to_device(9);
-    tables[4].move_column_to_device(11, { false, true, false });
+    tables[1].move_column_to_device(0);
+    tables[1].move_column_to_device(5);
+
+    tables[4].move_column_to_device(4);
+    tables[4].move_column_to_device(12);
     // for (int i = 0; i < MAX_NTABLES; i++)
     //     tables[i].move_all_to_device();
     gpu_queue.wait_and_throw();
 
-    // #if not PERFORMANCE_MEASUREMENT_ACTIVE
+    #if not PERFORMANCE_MEASUREMENT_ACTIVE
     // std::cout << "All tables moved to device." << std::endl;
 
     uint64_t total_mem = 0, total_gpu_mem = 0;
@@ -918,10 +932,10 @@ int data_driven_operator_replacement(int argc, char **argv)
         total_mem += tables[i].get_data_size(false);
         total_gpu_mem += tables[i].get_data_size(true);
     }
-    std::cout << "Total memory used by tables: " << total_mem / ((uint64_t)1 << 20)
-        << " MB (GPU: " << total_gpu_mem / ((uint64_t)1 << 20) << " MB)" << std::endl;
+    std::cout << "Total memory used by tables: " << (total_mem >> 20)
+        << " MB (GPU: " << (total_gpu_mem >> 20) << " MB)" << std::endl;
 
-    // #endif
+    #endif
 
     memory_manager gpu_allocator(gpu_queue, SIZE_TEMP_MEMORY_GPU);
     memory_manager cpu_allocator(cpu_queue, SIZE_TEMP_MEMORY_CPU);
@@ -935,10 +949,10 @@ int data_driven_operator_replacement(int argc, char **argv)
         #if PERFORMANCE_MEASUREMENT_ACTIVE
         std::string sql_filename = argv[1];
         std::string query_name = sql_filename.substr(sql_filename.find_last_of("/") + 1, 3);
-        std::ofstream perf_file(query_name + "-performance-ddor-1seg.log", std::ios::out | std::ios::trunc);
+        std::ofstream perf_file(query_name + "-performance-cpu-s100.log", std::ios::out | std::ios::trunc);
         if (!perf_file.is_open())
         {
-            std::cerr << "Could not open performance log file: " << query_name << "-performance-ddor-1seg.log" << std::endl;
+            std::cerr << "Could not open performance log file: " << query_name << "-performance-cpu-s100.log" << std::endl;
             return 1;
         }
 
@@ -1050,7 +1064,6 @@ int test()
     auto e = gpu_queue.memcpy(data_cpu, data_gpu, N * sizeof(int), { e1, e2 });
 
     uint64_t *sum_result = sycl::malloc_shared<uint64_t>(1, cpu_queue);
-    *sum_result = 0;
 
     cpu_queue.submit(
         [&](sycl::handler &cgh)
@@ -1058,7 +1071,7 @@ int test()
             cgh.depends_on(e);
             cgh.parallel_for(
                 sycl::range<1>(N),
-                sycl::reduction(sum_result, sycl::plus<>()),
+                sycl::reduction(sum_result, sycl::plus<>(), sycl::property::reduction::initialize_to_identity {}),
                 [=](sycl::id<1> idx, auto &sum)
                 {
 
