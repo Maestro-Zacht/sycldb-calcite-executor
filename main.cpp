@@ -919,7 +919,7 @@ int data_driven_operator_replacement(int argc, char **argv)
     }
 
     tables[1].move_column_to_device(0);
-    tables[1].move_column_to_device(5);
+    tables[1].move_column_to_device(4);
 
     tables[4].move_column_to_device(4);
     tables[4].move_column_to_device(12);
