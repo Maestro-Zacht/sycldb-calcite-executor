@@ -982,6 +982,13 @@ public:
             if (agg_col_sync_data.second)
                 pending_kernels.push_back(agg_col_sync_data.first);
 
+            for (int i = 0; i < group.size(); i++)
+            {
+                auto col_sync_data = current_columns[group[i]]->ensure_data_on(on_device);
+                if (col_sync_data.second)
+                    pending_kernels.push_back(col_sync_data.first);
+            }
+
             memory_manager &allocator = on_device ? gpu_allocator : cpu_allocator;
 
             uint64_t prod_ranges = 1;
