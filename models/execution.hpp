@@ -38,7 +38,7 @@ public:
         : kernel_type(kt), kernel_def(std::shared_ptr<KernelDefinition>(kd))
     {}
 
-    sycl::event execute(
+    std::vector<sycl::event> execute(
         sycl::queue gpu_queue,
         sycl::queue cpu_queue,
         const std::vector<sycl::event> &gpu_dependencies,
@@ -59,19 +59,12 @@ public:
         {
         case KernelType::EmptyKernel:
         {
-            EmptyKernel *kernel = static_cast<EmptyKernel *>(kernel_def.get());
-            return queue.submit(
-                [&](sycl::handler &cgh)
-                {
-                    cgh.depends_on(dependencies);
-                    cgh.single_task(*kernel);
-                }
-            );
+            return dependencies;
         }
         case KernelType::LogicalKernel:
         {
             LogicalKernel *kernel = static_cast<LogicalKernel *>(kernel_def.get());
-            return queue.submit(
+            auto e = queue.submit(
                 [&](sycl::handler &cgh)
                 {
                     cgh.depends_on(dependencies);
@@ -81,11 +74,12 @@ public:
                     );
                 }
             );
+            return { e };
         }
         case KernelType::SelectionKernelColumns:
         {
             SelectionKernelColumns *kernel = static_cast<SelectionKernelColumns *>(kernel_def.get());
-            return queue.submit(
+            auto e = queue.submit(
                 [&](sycl::handler &cgh)
                 {
                     cgh.depends_on(dependencies);
@@ -95,11 +89,12 @@ public:
                     );
                 }
             );
+            return { e };
         }
         case KernelType::SelectionKernelLiteral:
         {
             SelectionKernelLiteral *kernel = static_cast<SelectionKernelLiteral *>(kernel_def.get());
-            return queue.submit(
+            auto e = queue.submit(
                 [&](sycl::handler &cgh)
                 {
                     cgh.depends_on(dependencies);
@@ -109,11 +104,12 @@ public:
                     );
                 }
             );
+            return { e };
         }
         case KernelType::FillKernel:
         {
             FillKernel *kernel = static_cast<FillKernel *>(kernel_def.get());
-            return queue.submit(
+            auto e = queue.submit(
                 [&](sycl::handler &cgh)
                 {
                     cgh.depends_on(dependencies);
@@ -123,11 +119,12 @@ public:
                     );
                 }
             );
+            return { e };
         }
         case KernelType::PerformOperationKernelColumns:
         {
             PerformOperationKernelColumns *kernel = static_cast<PerformOperationKernelColumns *>(kernel_def.get());
-            return queue.submit(
+            auto e = queue.submit(
                 [&](sycl::handler &cgh)
                 {
                     cgh.depends_on(dependencies);
@@ -137,11 +134,12 @@ public:
                     );
                 }
             );
+            return { e };
         }
         case KernelType::PerformOperationKernelLiteralFirst:
         {
             PerformOperationKernelLiteralFirst *kernel = static_cast<PerformOperationKernelLiteralFirst *>(kernel_def.get());
-            return queue.submit(
+            auto e = queue.submit(
                 [&](sycl::handler &cgh)
                 {
                     cgh.depends_on(dependencies);
@@ -151,11 +149,12 @@ public:
                     );
                 }
             );
+            return { e };
         }
         case KernelType::PerformOperationKernelLiteralSecond:
         {
             PerformOperationKernelLiteralSecond *kernel = static_cast<PerformOperationKernelLiteralSecond *>(kernel_def.get());
-            return queue.submit(
+            auto e = queue.submit(
                 [&](sycl::handler &cgh)
                 {
                     cgh.depends_on(dependencies);
@@ -165,11 +164,12 @@ public:
                     );
                 }
             );
+            return { e };
         }
         case KernelType::BuildKeysHTKernel:
         {
             BuildKeysHTKernel *kernel = static_cast<BuildKeysHTKernel *>(kernel_def.get());
-            return queue.submit(
+            auto e = queue.submit(
                 [&](sycl::handler &cgh)
                 {
                     cgh.depends_on(dependencies);
@@ -179,11 +179,12 @@ public:
                     );
                 }
             );
+            return { e };
         }
         case KernelType::FilterJoinKernel:
         {
             FilterJoinKernel *kernel = static_cast<FilterJoinKernel *>(kernel_def.get());
-            return queue.submit(
+            auto e = queue.submit(
                 [&](sycl::handler &cgh)
                 {
                     cgh.depends_on(dependencies);
@@ -193,11 +194,12 @@ public:
                     );
                 }
             );
+            return { e };
         }
         case KernelType::BuildKeyValsHTKernel:
         {
             BuildKeyValsHTKernel *kernel = static_cast<BuildKeyValsHTKernel *>(kernel_def.get());
-            return queue.submit(
+            auto e = queue.submit(
                 [&](sycl::handler &cgh)
                 {
                     cgh.depends_on(dependencies);
@@ -207,11 +209,12 @@ public:
                     );
                 }
             );
+            return { e };
         }
         case KernelType::FullJoinKernel:
         {
             FullJoinKernel *kernel = static_cast<FullJoinKernel *>(kernel_def.get());
-            return queue.submit(
+            auto e = queue.submit(
                 [&](sycl::handler &cgh)
                 {
                     cgh.depends_on(dependencies);
@@ -221,11 +224,12 @@ public:
                     );
                 }
             );
+            return { e };
         }
         case KernelType::AggregateOperationKernel:
         {
             AggregateOperationKernel *kernel = static_cast<AggregateOperationKernel *>(kernel_def.get());
-            return queue.submit(
+            auto e = queue.submit(
                 [&](sycl::handler &cgh)
                 {
                     cgh.depends_on(dependencies);
@@ -235,11 +239,12 @@ public:
                     );
                 }
             );
+            return { e };
         }
         case KernelType::GroupByAggregateKernel:
         {
             GroupByAggregateKernel *kernel = static_cast<GroupByAggregateKernel *>(kernel_def.get());
-            return queue.submit(
+            auto e = queue.submit(
                 [&](sycl::handler &cgh)
                 {
                     cgh.depends_on(dependencies);
@@ -249,6 +254,7 @@ public:
                     );
                 }
             );
+            return { e };
         }
         case KernelType::SyncFlagsKernel:
         {
@@ -263,7 +269,7 @@ public:
                 on_device ? cpu_dependencies : gpu_dependencies
             );
 
-            return queue.submit(
+            e = queue.submit(
                 [&](sycl::handler &cgh)
                 {
                     cgh.depends_on(dependencies);
@@ -271,6 +277,7 @@ public:
                     cgh.parallel_for(len, *kernel);
                 }
             );
+            return { e };
         }
         case KernelType::CopyKernel:
         {
@@ -281,7 +288,10 @@ public:
             int len = kernel->get_col_len();
             int size = kernel->get_size();
 
-            return gpu_queue.memcpy(dst, src, len * size, on_device ? cpu_dependencies : gpu_dependencies);
+            auto e = gpu_queue.memcpy(dst, src, len * size, on_device ? cpu_dependencies : gpu_dependencies);
+            std::vector<sycl::event> events(dependencies);
+            events.push_back(e);
+            return events;
         }
         default:
             std::cerr << "Unknown kernel type in KernelData::execute()" << std::endl;
@@ -310,7 +320,7 @@ public:
         kernels.push_back(kernel);
     }
 
-    sycl::event execute(
+    std::vector<sycl::event> execute(
         sycl::queue gpu_queue,
         sycl::queue cpu_queue,
         const std::vector<sycl::event> &gpu_dependencies,
@@ -318,11 +328,10 @@ public:
     ) const
     {
         std::vector<sycl::event> deps = on_device ? gpu_dependencies : cpu_dependencies;
-        sycl::event e;
 
         for (const KernelData &kernel : kernels)
         {
-            e = kernel.execute(
+            deps = kernel.execute(
                 gpu_queue,
                 cpu_queue,
                 on_device ? deps : gpu_dependencies,
@@ -331,10 +340,8 @@ public:
             );
             // e.wait();
             // std::cout << "    - Kernel executed" << std::endl;
-            deps.clear();
-            deps.push_back(e);
         }
 
-        return e;
+        return deps;
     }
 };

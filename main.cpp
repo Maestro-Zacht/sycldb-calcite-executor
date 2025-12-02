@@ -836,12 +836,16 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
     TransientTable &final_table = transient_tables[output_table[result.rels.size() - 1]];
 
     final_table.update_flags(false, gpu_allocator, cpu_allocator);
-    final_table.execute_pending_kernels();
-    gpu_queue.wait();
-    cpu_queue.wait();
+    auto events = final_table.execute_pending_kernels();
+    sycl::event::wait(events.first);
+    sycl::event::wait(events.second);
+    gpu_queue.wait_and_throw();
+    cpu_queue.wait_and_throw();
     final_table.assert_flags_to_cpu();
     // std::cout << "Final result:\n" << final_table << std::endl;
     save_result(final_table, data_path);
+    gpu_queue.wait_and_throw();
+    cpu_queue.wait_and_throw();
     #endif
 
     return duration;
