@@ -917,24 +917,29 @@ int data_driven_operator_replacement(int argc, char **argv)
         std::cout << table.get_name() << " num segments: " << table.num_segments() << std::endl;
     }
 
-    tables[1].move_column_to_device(0);
-    tables[1].move_column_to_device(4);
+    // tables[0].move_column_to_device(0);
+    // tables[0].move_column_to_device(4);
 
-    tables[2].move_column_to_device(0);
-    tables[2].move_column_to_device(4);
+    // tables[1].move_column_to_device(0);
+    // tables[1].move_column_to_device(4);
 
-    tables[3].move_column_to_device(0);
-    tables[3].move_column_to_device(4);
+    // tables[2].move_column_to_device(0);
+    // tables[2].move_column_to_device(4);
 
-    tables[4].move_column_to_device(2);
-    tables[4].move_column_to_device(4);
-    tables[4].move_column_to_device(5);
-    tables[4].move_column_to_device(8);
-    tables[4].move_column_to_device(13);
-    tables[4].move_column_to_device(14);
+    // tables[3].move_column_to_device(0);
+    // tables[3].move_column_to_device(4);
+
+    // tables[4].move_column_to_device(2);
+    // tables[4].move_column_to_device(3);
+    // tables[4].move_column_to_device(4);
+    // tables[4].move_column_to_device(5);
+    // tables[4].move_column_to_device(8);
+    // tables[4].move_column_to_device(12);
+    // tables[4].move_column_to_device(13);
+    // tables[4].move_column_to_device(14);
     // for (int i = 0; i < MAX_NTABLES; i++)
     //     tables[i].move_all_to_device();
-    gpu_queue.wait_and_throw();
+    // gpu_queue.wait_and_throw();
 
     #if not PERFORMANCE_MEASUREMENT_ACTIVE
     // std::cout << "All tables moved to device." << std::endl;
