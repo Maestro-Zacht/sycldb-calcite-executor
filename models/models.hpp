@@ -23,10 +23,10 @@ private:
     int *data_host, *data_device;
     int min, max;
     uint64_t nrows;
-    sycl::queue gpu_queue, cpu_queue;
+    sycl::queue &gpu_queue, &cpu_queue;
     bool on_device, is_aggregate_result, is_materialized, dirty_cache;
 public:
-    Segment(const int *init_data, sycl::queue gpu_queue, sycl::queue cpu_queue, uint64_t count = SEGMENT_SIZE)
+    Segment(const int *init_data, sycl::queue &gpu_queue, sycl::queue &cpu_queue, uint64_t count = SEGMENT_SIZE)
         :
         data_device(nullptr),
         nrows(count),
@@ -87,8 +87,8 @@ public:
     }
 
     Segment(
-        sycl::queue gpu_queue,
-        sycl::queue cpu_queue,
+        sycl::queue &gpu_queue,
+        sycl::queue &cpu_queue,
         memory_manager &cpu_allocator,
         memory_manager &gpu_allocator,
         bool on_device,
@@ -133,8 +133,8 @@ public:
     Segment(
         uint64_t *init_data,
         bool on_device,
-        sycl::queue gpu_queue,
-        sycl::queue cpu_queue,
+        sycl::queue &gpu_queue,
+        sycl::queue &cpu_queue,
         memory_manager &gpu_allocator,
         memory_manager &cpu_allocator,
         uint64_t count = SEGMENT_SIZE
@@ -172,8 +172,8 @@ public:
     Segment(
         int *init_data,
         bool on_device,
-        sycl::queue gpu_queue,
-        sycl::queue cpu_queue,
+        sycl::queue &gpu_queue,
+        sycl::queue &cpu_queue,
         memory_manager &gpu_allocator,
         memory_manager &cpu_allocator,
         uint64_t count = SEGMENT_SIZE
@@ -1094,8 +1094,8 @@ public:
         const int *build_ht,
         memory_manager &gpu_allocator,
         memory_manager &cpu_allocator,
-        sycl::queue gpu_queue,
-        sycl::queue cpu_queue,
+        sycl::queue &gpu_queue,
+        sycl::queue &cpu_queue,
         bool on_device) const
     {
         std::vector<KernelBundle> ops;

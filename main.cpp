@@ -812,7 +812,6 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
     }
 
     transient_tables[output_table[result.rels.size() - 1]].execute_pending_kernels();
-    // std::cout << "Waiting for all operations to complete. Event list len: " << events.size() << std::endl;
 
     // auto pre_wait = std::chrono::high_resolution_clock::now();
 
@@ -823,7 +822,7 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
     std::chrono::duration<double, std::milli> duration = end - start;
     // std::chrono::duration<double, std::milli> wait_time = end - pre_wait;
 
-    // std::cout << "All operations completed in " << duration.count() << " ms\nTime waiting: " << wait_time.count() << " ms" << std::endl;
+    // std::cout << "All operations completed in " << duration.count() << " ms" << std::endl;
 
     gpu_queue.single_task<EndTimer2>([=]() {}).wait();
     cpu_queue.single_task<EndTimer3>([=]() {}).wait();
@@ -921,9 +920,18 @@ int data_driven_operator_replacement(int argc, char **argv)
     tables[1].move_column_to_device(0);
     tables[1].move_column_to_device(4);
 
+    tables[2].move_column_to_device(0);
+    tables[2].move_column_to_device(4);
+
+    tables[3].move_column_to_device(0);
+    tables[3].move_column_to_device(4);
+
+    tables[4].move_column_to_device(2);
     tables[4].move_column_to_device(4);
-    tables[4].move_column_to_device(12);
+    tables[4].move_column_to_device(5);
+    tables[4].move_column_to_device(8);
     tables[4].move_column_to_device(13);
+    tables[4].move_column_to_device(14);
     // for (int i = 0; i < MAX_NTABLES; i++)
     //     tables[i].move_all_to_device();
     gpu_queue.wait_and_throw();
@@ -997,6 +1005,7 @@ int data_driven_operator_replacement(int argc, char **argv)
 
             gpu_queue.wait_and_throw();
             cpu_queue.wait_and_throw();
+            // sleep(1);
         }
         perf_file.close();
         #else
@@ -1041,6 +1050,13 @@ int data_driven_operator_replacement(int argc, char **argv)
     std::cout << "Finished execution." << std::endl;
     #endif
 
+    gpu_queue.wait_and_throw();
+    cpu_queue.wait_and_throw();
+
+    #if not PERFORMANCE_MEASUREMENT_ACTIVE
+    std::cout << "Finished waiting" << std::endl;
+    #endif
+
     return 0;
 }
 
@@ -1058,39 +1074,55 @@ int test()
         #endif
     };
 
-    uint64_t N = ((uint64_t)1 << 30);
+    uint64_t N = ((uint64_t)1 << 30),
+        reps = 50;
 
     int *data_gpu = sycl::malloc_device<int>(N, gpu_queue);
     int *data_cpu = sycl::malloc_device<int>(N, cpu_queue);
 
-    auto e1 = gpu_queue.fill<int>(data_gpu, 1, N);
-    auto e2 = cpu_queue.fill<int>(data_cpu, 2, N);
+    sycl::event gpu_event = gpu_queue.fill<int>(data_gpu, 1, N),
+        cpu_event = cpu_queue.fill<int>(data_cpu, 2, N);
 
-    auto e = gpu_queue.memcpy(data_cpu, data_gpu, N * sizeof(int), { e1, e2 });
+    cpu_event.wait();
+    gpu_event.wait();
 
-    uint64_t *sum_result = sycl::malloc_shared<uint64_t>(1, cpu_queue);
+    for (int i = 0; i < reps; i++)
+    {
+        auto e1 = gpu_queue.submit(
+            [&](sycl::handler &cgh)
+            {
+                cgh.depends_on(gpu_event);
+                cgh.parallel_for(
+                    sycl::range<1>{N},
+                    [=](sycl::id<1> idx)
+                    {
+                        data_gpu[idx] += 1;
+                    }
+                );
+            }
+        );
+        gpu_event = e1;
 
-    cpu_queue.submit(
-        [&](sycl::handler &cgh)
-        {
-            cgh.depends_on(e);
-            cgh.parallel_for(
-                sycl::range<1>(N),
-                sycl::reduction(sum_result, sycl::plus<>(), sycl::property::reduction::initialize_to_identity {}),
-                [=](sycl::id<1> idx, auto &sum)
-                {
+        auto e2 = cpu_queue.submit(
+            [&](sycl::handler &cgh)
+            {
+                cgh.depends_on(cpu_event);
+                cgh.parallel_for(
+                    sycl::range<1>{N},
+                    [=](sycl::id<1> idx)
+                    {
+                        data_cpu[idx] += 1;
+                    }
+                );
+            }
+        );
+        cpu_event = e2;
+    }
 
-                    sum.combine(data_cpu[idx[0]]);
-                }
-            );
-        }
-    ).wait();
 
-    std::cout << "Sum result: " << *sum_result << " - expected: " << N << " - equal: " << (*sum_result == N) << std::endl;
 
     sycl::free(data_gpu, gpu_queue);
     sycl::free(data_cpu, cpu_queue);
-    sycl::free(sum_result, cpu_queue);
 
     return 0;
 }

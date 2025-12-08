@@ -7,13 +7,13 @@
 class memory_manager
 {
 private:
-    char *memory_region_device, *current_free_device,
+    void *memory_region_device, *current_free_device,
         *memory_region_host, *current_free_host;
     uint64_t size_device, allocated_device,
         size_host, allocated_host;
-    sycl::queue queue;
+    sycl::queue &queue;
 public:
-    memory_manager(sycl::queue queue, uint64_t size);
+    memory_manager(sycl::queue &queue, uint64_t size);
     ~memory_manager();
 
     template <typename T>
@@ -22,15 +22,15 @@ public:
     void reset();
 };
 
-memory_manager::memory_manager(sycl::queue queue, uint64_t size)
+memory_manager::memory_manager(sycl::queue &queue, uint64_t size)
     : size_device(size), size_host(size >> 4), queue(queue)
 {
     #if MEMORY_MANAGER_DEBUG_INFO
     std::cout << "Allocating memory region of size " << size_device << " bytes on device and " << size_host << " bytes on host." << std::endl;
     #endif
 
-    memory_region_device = sycl::malloc_device<char>(size_device, queue);
-    memory_region_host = sycl::malloc_host<char>(size_host, queue);
+    memory_region_device = sycl::malloc_device<uint8_t>(size_device, queue);
+    memory_region_host = sycl::malloc_host<uint8_t>(size_host, queue);
 
     reset();
 }
@@ -62,41 +62,9 @@ T *memory_manager::alloc(uint64_t count, bool on_device)
         << size << " bytes total, " << allocated << " bytes allocated." << std::endl;
     #endif
 
-    // T *ptr;
-
-    // if (on_device)
-    // {
-
-    //     if (allocated_device + bytes > size_device)
-    //     {
-    //         std::cerr << "Memory manager out of memory on device: requested " << bytes << " bytes, "
-    //             << (size_device - allocated_device) << " bytes available." << std::endl;
-    //         throw std::bad_alloc();
-    //     }
-
-    //     ptr = reinterpret_cast<T *>(current_free_device);
-
-    //     current_free_device += bytes;
-    //     allocated_device += bytes;
-    // }
-    // else
-    // {
-    //     if (allocated_host + bytes > size_host)
-    //     {
-    //         std::cerr << "Memory manager out of memory on host: requested " << bytes << " bytes, "
-    //             << (size_host - allocated_host) << " bytes available." << std::endl;
-    //         throw std::bad_alloc();
-    //     }
-
-    //     ptr = reinterpret_cast<T *>(current_free_host);
-
-    //     current_free_host += bytes;
-    //     allocated_host += bytes;
-    // }
-
     uint64_t &allocated = on_device ? allocated_device : allocated_host,
         &size = on_device ? size_device : size_host;
-    char *&current_free = on_device ? current_free_device : current_free_host;
+    void *&current_free = on_device ? current_free_device : current_free_host;
 
     if (allocated + bytes > size)
     {
@@ -108,7 +76,7 @@ T *memory_manager::alloc(uint64_t count, bool on_device)
 
     T *ptr = reinterpret_cast<T *>(current_free);
 
-    current_free += bytes;
+    current_free = static_cast<void *>(static_cast<uint8_t *>(current_free) + bytes);
     allocated += bytes;
 
     return ptr;

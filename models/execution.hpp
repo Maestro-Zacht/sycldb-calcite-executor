@@ -39,14 +39,14 @@ public:
     {}
 
     std::vector<sycl::event> execute(
-        sycl::queue gpu_queue,
-        sycl::queue cpu_queue,
+        sycl::queue &gpu_queue,
+        sycl::queue &cpu_queue,
         const std::vector<sycl::event> &gpu_dependencies,
         const std::vector<sycl::event> &cpu_dependencies,
         bool on_device
     ) const
     {
-        sycl::queue queue = on_device ? gpu_queue : cpu_queue;
+        sycl::queue &queue = on_device ? gpu_queue : cpu_queue;
         const std::vector<sycl::event> &dependencies = on_device ? gpu_dependencies : cpu_dependencies;
 
         // std::cout << "  - Executing kernel of type "
@@ -67,7 +67,9 @@ public:
             auto e = queue.submit(
                 [&](sycl::handler &cgh)
                 {
-                    cgh.depends_on(dependencies);
+                    if (!dependencies.empty())
+                        cgh.depends_on(dependencies);
+
                     cgh.parallel_for(
                         kernel->get_col_len(),
                         *kernel
@@ -82,7 +84,9 @@ public:
             auto e = queue.submit(
                 [&](sycl::handler &cgh)
                 {
-                    cgh.depends_on(dependencies);
+                    if (!dependencies.empty())
+                        cgh.depends_on(dependencies);
+
                     cgh.parallel_for(
                         kernel->get_col_len(),
                         *kernel
@@ -97,7 +101,9 @@ public:
             auto e = queue.submit(
                 [&](sycl::handler &cgh)
                 {
-                    cgh.depends_on(dependencies);
+                    if (!dependencies.empty())
+                        cgh.depends_on(dependencies);
+
                     cgh.parallel_for(
                         kernel->get_col_len(),
                         *kernel
@@ -112,7 +118,9 @@ public:
             auto e = queue.submit(
                 [&](sycl::handler &cgh)
                 {
-                    cgh.depends_on(dependencies);
+                    if (!dependencies.empty())
+                        cgh.depends_on(dependencies);
+
                     cgh.parallel_for(
                         kernel->get_col_len(),
                         *kernel
@@ -127,7 +135,9 @@ public:
             auto e = queue.submit(
                 [&](sycl::handler &cgh)
                 {
-                    cgh.depends_on(dependencies);
+                    if (!dependencies.empty())
+                        cgh.depends_on(dependencies);
+
                     cgh.parallel_for(
                         kernel->get_col_len(),
                         *kernel
@@ -142,7 +152,9 @@ public:
             auto e = queue.submit(
                 [&](sycl::handler &cgh)
                 {
-                    cgh.depends_on(dependencies);
+                    if (!dependencies.empty())
+                        cgh.depends_on(dependencies);
+
                     cgh.parallel_for(
                         kernel->get_col_len(),
                         *kernel
@@ -157,7 +169,9 @@ public:
             auto e = queue.submit(
                 [&](sycl::handler &cgh)
                 {
-                    cgh.depends_on(dependencies);
+                    if (!dependencies.empty())
+                        cgh.depends_on(dependencies);
+
                     cgh.parallel_for(
                         kernel->get_col_len(),
                         *kernel
@@ -172,7 +186,9 @@ public:
             auto e = queue.submit(
                 [&](sycl::handler &cgh)
                 {
-                    cgh.depends_on(dependencies);
+                    if (!dependencies.empty())
+                        cgh.depends_on(dependencies);
+
                     cgh.parallel_for(
                         kernel->get_col_len(),
                         *kernel
@@ -187,7 +203,9 @@ public:
             auto e = queue.submit(
                 [&](sycl::handler &cgh)
                 {
-                    cgh.depends_on(dependencies);
+                    if (!dependencies.empty())
+                        cgh.depends_on(dependencies);
+
                     cgh.parallel_for(
                         kernel->get_col_len(),
                         *kernel
@@ -202,7 +220,9 @@ public:
             auto e = queue.submit(
                 [&](sycl::handler &cgh)
                 {
-                    cgh.depends_on(dependencies);
+                    if (!dependencies.empty())
+                        cgh.depends_on(dependencies);
+
                     cgh.parallel_for(
                         kernel->get_col_len(),
                         *kernel
@@ -217,7 +237,9 @@ public:
             auto e = queue.submit(
                 [&](sycl::handler &cgh)
                 {
-                    cgh.depends_on(dependencies);
+                    if (!dependencies.empty())
+                        cgh.depends_on(dependencies);
+
                     cgh.parallel_for(
                         kernel->get_col_len(),
                         *kernel
@@ -232,7 +254,9 @@ public:
             auto e = queue.submit(
                 [&](sycl::handler &cgh)
                 {
-                    cgh.depends_on(dependencies);
+                    if (!dependencies.empty())
+                        cgh.depends_on(dependencies);
+
                     cgh.parallel_for(
                         kernel->get_col_len(),
                         *kernel
@@ -247,7 +271,9 @@ public:
             auto e = queue.submit(
                 [&](sycl::handler &cgh)
                 {
-                    cgh.depends_on(dependencies);
+                    if (!dependencies.empty())
+                        cgh.depends_on(dependencies);
+
                     cgh.parallel_for(
                         kernel->get_col_len(),
                         *kernel
@@ -264,15 +290,22 @@ public:
             bool *tmp = kernel->get_tmp();
             int len = kernel->get_col_len();
 
-            sycl::event e = gpu_queue.memcpy(
-                tmp, src, len * sizeof(bool),
-                on_device ? cpu_dependencies : gpu_dependencies
-            );
+            auto deps = on_device ? cpu_dependencies : gpu_dependencies;
+
+            sycl::event e;
+            if (!deps.empty())
+                e = gpu_queue.memcpy(
+                    tmp, src, len * sizeof(bool),
+                    deps
+                );
+            else
+                e = gpu_queue.memcpy(tmp, src, len * sizeof(bool));
 
             e = queue.submit(
                 [&](sycl::handler &cgh)
                 {
-                    cgh.depends_on(dependencies);
+                    if (!dependencies.empty())
+                        cgh.depends_on(dependencies);
                     cgh.depends_on(e);
                     cgh.parallel_for(len, *kernel);
                 }
@@ -288,10 +321,18 @@ public:
             int len = kernel->get_col_len();
             int size = kernel->get_size();
 
-            auto e = gpu_queue.memcpy(dst, src, len * size, on_device ? cpu_dependencies : gpu_dependencies);
-            std::vector<sycl::event> events(dependencies);
-            events.push_back(e);
-            return events;
+            sycl::event e;
+            std::vector<sycl::event> deps;
+            deps.reserve(cpu_dependencies.size() + gpu_dependencies.size());
+            deps.insert(deps.end(), cpu_dependencies.begin(), cpu_dependencies.end());
+            deps.insert(deps.end(), gpu_dependencies.begin(), gpu_dependencies.end());
+
+            if (!deps.empty())
+                e = gpu_queue.memcpy(dst, src, len * size, deps);
+            else
+                e = gpu_queue.memcpy(dst, src, len * size);
+
+            return { e };
         }
         default:
             std::cerr << "Unknown kernel type in KernelData::execute()" << std::endl;
@@ -321,8 +362,8 @@ public:
     }
 
     std::vector<sycl::event> execute(
-        sycl::queue gpu_queue,
-        sycl::queue cpu_queue,
+        sycl::queue &gpu_queue,
+        sycl::queue &cpu_queue,
         const std::vector<sycl::event> &gpu_dependencies,
         const std::vector<sycl::event> &cpu_dependencies
     ) const
@@ -338,7 +379,7 @@ public:
                 on_device ? cpu_dependencies : deps,
                 on_device
             );
-            // e.wait();
+            // sycl::event::wait(deps);
             // std::cout << "    - Kernel executed" << std::endl;
         }
 
