@@ -832,19 +832,19 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
     #if PERFORMANCE_MEASUREMENT_ACTIVE
     perf_out << duration.count() << '\n';
     #else
-    TransientTable &final_table = transient_tables[output_table[result.rels.size() - 1]];
+    // TransientTable &final_table = transient_tables[output_table[result.rels.size() - 1]];
 
-    final_table.update_flags(false, gpu_allocator, cpu_allocator);
-    auto events = final_table.execute_pending_kernels();
-    sycl::event::wait(events.first);
-    sycl::event::wait(events.second);
-    gpu_queue.wait_and_throw();
-    cpu_queue.wait_and_throw();
-    final_table.assert_flags_to_cpu();
-    // std::cout << "Final result:\n" << final_table << std::endl;
-    save_result(final_table, data_path);
-    gpu_queue.wait_and_throw();
-    cpu_queue.wait_and_throw();
+    // final_table.update_flags(false, gpu_allocator, cpu_allocator);
+    // auto events = final_table.execute_pending_kernels();
+    // sycl::event::wait(events.first);
+    // sycl::event::wait(events.second);
+    // gpu_queue.wait_and_throw();
+    // cpu_queue.wait_and_throw();
+    // final_table.assert_flags_to_cpu();
+    // // std::cout << "Final result:\n" << final_table << std::endl;
+    // save_result(final_table, data_path);
+    // gpu_queue.wait_and_throw();
+    // cpu_queue.wait_and_throw();
     #endif
 
     return duration;
@@ -917,31 +917,34 @@ int data_driven_operator_replacement(int argc, char **argv)
         std::cout << table.get_name() << " num segments: " << table.num_segments() << std::endl;
     }
 
-    // tables[0].move_column_to_device(0);
-    // tables[0].move_column_to_device(4);
+    tables[0].move_column_to_device(0);
+    tables[0].move_column_to_device(3);
+    tables[0].move_column_to_device(4);
 
-    // tables[1].move_column_to_device(0);
-    // tables[1].move_column_to_device(4);
+    tables[1].move_column_to_device(0);
+    tables[1].move_column_to_device(4);
+    tables[1].move_column_to_device(5);
 
-    // tables[2].move_column_to_device(0);
-    // tables[2].move_column_to_device(4);
+    tables[2].move_column_to_device(0);
+    tables[2].move_column_to_device(4);
 
-    // tables[3].move_column_to_device(0);
-    // tables[3].move_column_to_device(4);
+    tables[3].move_column_to_device(0);
+    tables[3].move_column_to_device(4);
 
     // tables[4].move_column_to_device(2);
-    // tables[4].move_column_to_device(3);
+    tables[4].move_column_to_device(3);
     // tables[4].move_column_to_device(4);
-    // tables[4].move_column_to_device(5);
+    tables[4].move_column_to_device(5);
     // tables[4].move_column_to_device(8);
+    // tables[4].move_column_to_device(9);
+    // tables[4].move_column_to_device(11);
     // tables[4].move_column_to_device(12);
     // tables[4].move_column_to_device(13);
     // tables[4].move_column_to_device(14);
     // for (int i = 0; i < MAX_NTABLES; i++)
     //     tables[i].move_all_to_device();
-    // gpu_queue.wait_and_throw();
+    gpu_queue.wait_and_throw();
 
-    #if not PERFORMANCE_MEASUREMENT_ACTIVE
     // std::cout << "All tables moved to device." << std::endl;
 
     uint64_t total_mem = 0, total_gpu_mem = 0;
@@ -953,7 +956,6 @@ int data_driven_operator_replacement(int argc, char **argv)
     std::cout << "Total memory used by tables: " << (total_mem >> 20)
         << " MB (GPU: " << (total_gpu_mem >> 20) << " MB)" << std::endl;
 
-    #endif
 
     memory_manager gpu_allocator(gpu_queue, SIZE_TEMP_MEMORY_GPU);
     memory_manager cpu_allocator(cpu_queue, SIZE_TEMP_MEMORY_CPU);
