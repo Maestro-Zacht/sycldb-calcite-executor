@@ -39,7 +39,10 @@ memory_manager::memory_manager(sycl::queue &queue, uint64_t size)
 memory_manager::~memory_manager()
 {
     #if MEMORY_MANAGER_DEBUG_INFO
-    std::cout << "Freeing memory region of size " << size_device << " bytes on device and " << size_host << " bytes on host. Address ranges: " << static_cast<void *>(memory_region_device) << " - " << static_cast<void *>(memory_region_device + size_device) << " on device, " << static_cast<void *>(memory_region_host) << " - " << static_cast<void *>(memory_region_host + size_host) << " on host." << std::endl;
+    std::cout << "Freeing memory region of size " << (allocated_device >> 20) << "/" << (size_device >> 20) << " MB on device and " << (allocated_host >> 20) << "/" << (size_host >> 20) << " MB on host."
+        // << " Address ranges: " << static_cast<void *>(memory_region_device) << " - " << static_cast<void *>(static_cast<uint8_t *>(memory_region_device) + size_device) << " on device, "
+        // << static_cast<void *>(memory_region_host) << " - " << static_cast<void *>(static_cast<uint8_t *>(memory_region_host) + size_host) << " on host."
+        << std::endl;
     #endif
 
     sycl::free(memory_region_device, queue);
@@ -57,14 +60,14 @@ T *memory_manager::alloc(uint64_t count, bool on_device)
 
     bytes = (bytes + 7) & (~7); // align to 8 bytes
 
+    uint64_t &allocated = on_device ? allocated_device : allocated_host,
+        &size = on_device ? size_device : size_host;
+    void *&current_free = on_device ? current_free_device : current_free_host;
+
     #if MEMORY_MANAGER_DEBUG_INFO
     std::cout << "Memory manager allocating " << bytes << " bytes. "
         << size << " bytes total, " << allocated << " bytes allocated." << std::endl;
     #endif
-
-    uint64_t &allocated = on_device ? allocated_device : allocated_host,
-        &size = on_device ? size_device : size_host;
-    void *&current_free = on_device ? current_free_device : current_free_host;
 
     if (allocated + bytes > size)
     {

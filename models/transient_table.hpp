@@ -183,9 +183,21 @@ public:
         for (uint64_t segment_index = 0; segment_index < segment_num; segment_index++)
         {
             // std::cout << " Executing segment " << segment_index + 1 << "/" << segment_num << std::endl;
-            std::vector<sycl::event> deps_gpu = pending_kernels_dependencies_gpu,
-                deps_cpu = pending_kernels_dependencies_cpu,
-                tmp;
+            // std::vector<sycl::event> deps_gpu = pending_kernels_dependencies_gpu,
+            //     deps_cpu = pending_kernels_dependencies_cpu,
+            //     tmp;
+            std::vector<sycl::event> deps_gpu, deps_cpu, tmp;
+
+            if (pending_kernels_dependencies_gpu.size() == segment_num)
+                deps_gpu.push_back(pending_kernels_dependencies_gpu[segment_index]);
+            else
+                deps_gpu = pending_kernels_dependencies_gpu;
+
+            if (pending_kernels_dependencies_cpu.size() == segment_num)
+                deps_cpu.push_back(pending_kernels_dependencies_cpu[segment_index]);
+            else
+                deps_cpu = pending_kernels_dependencies_cpu;
+
 
             for (int i = 0; i < 2; i++)
             {
@@ -677,10 +689,13 @@ public:
                 false
                 #endif
             );
-            // pending_kernels_dependencies_gpu = dependencies.first;
-            // pending_kernels_dependencies_cpu = dependencies.second;
+            #if USE_FUSION
             gpu_queue.wait_and_throw();
             cpu_queue.wait_and_throw();
+            #else
+            pending_kernels_dependencies_gpu = dependencies.first;
+            pending_kernels_dependencies_cpu = dependencies.second;
+            #endif
         }
 
         auto ht_res = current_columns[column]->build_key_vals_hash_table(
@@ -1070,6 +1085,12 @@ public:
                 pending_kernels_dependencies_gpu = dependencies.first;
                 pending_kernels_dependencies_cpu = dependencies.second;
 
+                // std::cout << "Updating flags before aggregate.\nDeps gpu: "
+                //     << pending_kernels_dependencies_gpu.size()
+                //     << ", cpu: "
+                //     << pending_kernels_dependencies_cpu.size()
+                //     << std::endl;
+
                 update_flags(on_device, gpu_allocator, cpu_allocator);
 
                 dependencies = execute_pending_kernels(
@@ -1077,8 +1098,13 @@ public:
                     false
                     #endif
                 );
+                #if USE_FUSION
+                gpu_queue.wait_and_throw();
+                cpu_queue.wait_and_throw();
+                #else
                 pending_kernels_dependencies_gpu = dependencies.first;
                 pending_kernels_dependencies_cpu = dependencies.second;
+                #endif
             }
 
             Column &result_column = materialized_columns.emplace_back(
@@ -1221,10 +1247,13 @@ public:
                     false
                     #endif
                 );
-                // pending_kernels_dependencies_gpu = dependencies.first;
-                // pending_kernels_dependencies_cpu = dependencies.second;
+                #if USE_FUSION
                 gpu_queue.wait_and_throw();
                 cpu_queue.wait_and_throw();
+                #else
+                pending_kernels_dependencies_gpu = dependencies.first;
+                pending_kernels_dependencies_cpu = dependencies.second;
+                #endif
 
                 // std::cout << "After executing flag/data sync kernels before aggregate."
                 //     // << pending_kernels_dependencies_gpu.size()
@@ -1554,10 +1583,13 @@ public:
                     false
                     #endif
                 );
-                // pending_kernels_dependencies_gpu = dependencies.first;
-                // pending_kernels_dependencies_cpu = dependencies.second;
+                #if USE_FUSION
                 gpu_queue.wait_and_throw();
                 cpu_queue.wait_and_throw();
+                #else
+                pending_kernels_dependencies_gpu = dependencies.first;
+                pending_kernels_dependencies_cpu = dependencies.second;
+                #endif
             }
 
             auto min_max_gb = right_table.group_by_column->get_min_max();
