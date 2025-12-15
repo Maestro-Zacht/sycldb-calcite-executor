@@ -8,7 +8,7 @@
 #include "../kernels/types.hpp"
 #include "memory_manager.hpp"
 
-#define DATA_DIR "/home/matteo/ssb/s100_columnar/"
+#define DATA_DIR "/home/matteo/ssb/s20_columnar/"
 
 TableData<int> loadTable(
     std::string table_name,

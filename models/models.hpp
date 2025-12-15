@@ -90,19 +90,17 @@ public:
         sycl::queue &gpu_queue,
         sycl::queue &cpu_queue,
         memory_manager &cpu_allocator,
-        memory_manager &gpu_allocator,
-        bool on_device,
-        bool is_aggregate_result,
         uint64_t count = SEGMENT_SIZE
     )
         :
+        data_device(nullptr),
         nrows(count),
         gpu_queue(gpu_queue),
         cpu_queue(cpu_queue),
-        on_device(on_device),
-        is_aggregate_result(is_aggregate_result),
+        on_device(false),
+        is_aggregate_result(false),
         is_materialized(true),
-        dirty_cache(true)
+        dirty_cache(false)
     {
         if (count > SEGMENT_SIZE)
         {
@@ -110,24 +108,7 @@ public:
             throw std::bad_alloc();
         }
 
-        if (is_aggregate_result)
-        {
-            data_host = reinterpret_cast<int *>(cpu_allocator.alloc<uint64_t>(count, true));
-            if (on_device)
-                data_device = reinterpret_cast<int *>(gpu_allocator.alloc<uint64_t>(count, true));
-            else
-                data_device = nullptr;
-        }
-        else
-        {
-            data_host = cpu_allocator.alloc<int>(count, true);
-            if (on_device)
-                data_device = gpu_allocator.alloc<int>(count, true);
-            else
-                data_device = nullptr;
-        }
-        // min = 0;
-        // max = 0;
+        data_host = cpu_allocator.alloc<int>(count, true);
     }
 
     Segment(
@@ -226,6 +207,11 @@ public:
         }
     }
 
+    bool is_on_device() const { return on_device; }
+    int get_min() const { return min; }
+    int get_max() const { return max; }
+    uint64_t get_nrows() const { return nrows; }
+
     FillKernel *fill_with_literal(int literal, bool fill_on_device)
     {
         if (!is_materialized)
@@ -247,10 +233,20 @@ public:
         );
     }
 
-    bool is_on_device() const { return on_device; }
-    int get_min() const { return min; }
-    int get_max() const { return max; }
-    uint64_t get_nrows() const { return nrows; }
+    void build_on_device(memory_manager &gpu_allocator)
+    {
+        if (!is_materialized)
+        {
+            std::cerr << "Segment build_on_device: cannot build non-materialized segment on device" << std::endl;
+            throw std::runtime_error("Segment build_on_device: cannot build non-materialized segment on device");
+        }
+        if (on_device)
+            return;
+
+        on_device = true;
+        dirty_cache = true;
+        data_device = gpu_allocator.alloc<int>(nrows, true);
+    }
 
     void set_min(int value)
     {
@@ -755,11 +751,8 @@ public:
         uint64_t nrows,
         sycl::queue &gpu_queue,
         sycl::queue &cpu_queue,
-        memory_manager &cpu_allocator,
-        memory_manager &gpu_allocator,
-        bool on_device,
-        bool is_aggregate_result)
-        : is_aggregate_result(is_aggregate_result)
+        memory_manager &cpu_allocator)
+        : is_aggregate_result(false)
     {
         uint64_t full_segments = nrows / SEGMENT_SIZE,
             remainder = nrows % SEGMENT_SIZE;
@@ -767,10 +760,10 @@ public:
         segments.reserve(full_segments + (remainder > 0));
 
         for (uint64_t i = 0; i < full_segments; i++)
-            segments.emplace_back(gpu_queue, cpu_queue, cpu_allocator, gpu_allocator, on_device, is_aggregate_result);
+            segments.emplace_back(gpu_queue, cpu_queue, cpu_allocator);
 
         if (remainder > 0)
-            segments.emplace_back(gpu_queue, cpu_queue, cpu_allocator, gpu_allocator, on_device, is_aggregate_result, remainder);
+            segments.emplace_back(gpu_queue, cpu_queue, cpu_allocator, remainder);
     }
 
     Column(
@@ -861,6 +854,19 @@ public:
         return true;
     }
 
+    std::pair<bool, bool> get_positions() const
+    {
+        bool has_host = false, has_device = false;
+        for (const auto &seg : segments)
+        {
+            if (seg.is_on_device())
+                has_device = true;
+            else
+                has_host = true;
+        }
+        return { has_device, has_host };
+    }
+
     std::pair<int, int> get_min_max() const
     {
         if (is_aggregate_result)
@@ -904,6 +910,10 @@ public:
         for (auto &seg : segments)
         {
             KernelBundle bundle(fill_on_device);
+
+            if (fill_on_device)
+                seg.build_on_device(gpu_allocator);
+
             bundle.add_kernel(
                 KernelData(
                     KernelType::FillKernel,
@@ -1085,31 +1095,22 @@ public:
         return { ht, min_value, max_value, ops };
     }
 
-    std::pair<std::vector<KernelBundle>, Column> full_join_operation(
+    std::vector<KernelBundle> full_join_operation(
         bool *probe_flags,
         int build_min_value,
         int build_max_value,
         int group_by_column_min,
         int group_by_column_max,
         const int *build_ht,
+        Column &new_column,
         memory_manager &gpu_allocator,
-        memory_manager &cpu_allocator,
         sycl::queue &gpu_queue,
         sycl::queue &cpu_queue,
-        bool on_device) const
+        bool on_device,
+        bool all_segments,
+        std::vector<bool> &flags_modified) const
     {
         std::vector<KernelBundle> ops;
-        uint64_t num_rows = (segments.size() - 1) * SEGMENT_SIZE + segments.back().get_nrows();
-        Column new_column(
-            num_rows,
-            gpu_queue,
-            cpu_queue,
-            cpu_allocator,
-            gpu_allocator,
-            on_device,
-            false
-        );
-
         ops.reserve(segments.size());
 
         for (int i = 0; i < segments.size(); i++)
@@ -1118,26 +1119,42 @@ public:
             Segment &new_seg = new_column.segments[i];
             KernelBundle bundle(on_device);
 
-            bundle.add_kernel(
-                KernelData(
-                    KernelType::FullJoinKernel,
-                    seg.full_join_operator(
-                        new_seg,
-                        probe_flags + i * SEGMENT_SIZE,
-                        build_ht,
-                        build_min_value,
-                        build_max_value,
-                        on_device
-                    )
-                )
-            );
-            ops.push_back(bundle);
+            if (on_device == seg.is_on_device() || (!on_device && all_segments))
+            {
+                if (on_device)
+                    new_seg.build_on_device(gpu_allocator);
 
-            new_seg.set_min(group_by_column_min);
-            new_seg.set_max(group_by_column_max);
+                bundle.add_kernel(
+                    KernelData(
+                        KernelType::FullJoinKernel,
+                        seg.full_join_operator(
+                            new_seg,
+                            probe_flags + i * SEGMENT_SIZE,
+                            build_ht,
+                            build_min_value,
+                            build_max_value,
+                            on_device
+                        )
+                    )
+                );
+                new_seg.set_min(group_by_column_min);
+                new_seg.set_max(group_by_column_max);
+                flags_modified[i] = true;
+            }
+            else
+            {
+                bundle.add_kernel(
+                    KernelData(
+                        KernelType::EmptyKernel,
+                        new EmptyKernel(1)
+                    )
+                );
+            }
+
+            ops.push_back(bundle);
         }
 
-        return { ops, new_column };
+        return ops;
     }
 };
 

@@ -800,14 +800,27 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
 
         // if (rel.relOp != RelNodeType::TABLE_SCAN)
         // {
-        //     uint64_t rows_selected_gpu = transient_tables[output_table[id]].count_flags_true(true, gpu_allocator, cpu_allocator),
-        //         rows_selected_cpu = transient_tables[output_table[id]].count_flags_true(false, gpu_allocator, cpu_allocator);
+        //     TransientTable &table = transient_tables[output_table[id]];
+        //     uint64_t
+        //         // rows_selected_gpu = table.count_flags_true(true, gpu_allocator, cpu_allocator),
+        //         rows_selected_cpu = table.count_flags_true(false, gpu_allocator, cpu_allocator);
         //     std::cout << "== rows selected after operation " << id
-        //         << "\n==== GPU: "
-        //         << rows_selected_gpu
+        //         // << "\n==== GPU: "
+        //         // << rows_selected_gpu
         //         << "\n==== CPU: "
         //         << rows_selected_cpu
         //         << std::endl;
+        //     // table.execute_pending_kernels();
+        //     // gpu_queue.wait();
+        //     // cpu_queue.wait();
+        //     // table.update_flags(false, gpu_allocator, cpu_allocator);
+        //     // table.execute_pending_kernels();
+        //     // gpu_queue.wait();
+        //     // cpu_queue.wait();
+        //     // table.assert_flags_to_cpu();
+        //     // save_result(table, "/t" + std::to_string(id) + "p");
+        //     // gpu_queue.wait();
+        //     // cpu_queue.wait();
         // }
     }
 
@@ -832,19 +845,19 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
     #if PERFORMANCE_MEASUREMENT_ACTIVE
     perf_out << duration.count() << '\n';
     #else
-    // TransientTable &final_table = transient_tables[output_table[result.rels.size() - 1]];
+    TransientTable &final_table = transient_tables[output_table[result.rels.size() - 1]];
 
-    // final_table.update_flags(false, gpu_allocator, cpu_allocator);
-    // auto events = final_table.execute_pending_kernels();
-    // sycl::event::wait(events.first);
-    // sycl::event::wait(events.second);
-    // gpu_queue.wait_and_throw();
-    // cpu_queue.wait_and_throw();
-    // final_table.assert_flags_to_cpu();
-    // // std::cout << "Final result:\n" << final_table << std::endl;
-    // save_result(final_table, data_path);
-    // gpu_queue.wait_and_throw();
-    // cpu_queue.wait_and_throw();
+    final_table.update_flags(false, gpu_allocator, cpu_allocator);
+    auto events = final_table.execute_pending_kernels();
+    sycl::event::wait(events.first);
+    sycl::event::wait(events.second);
+    gpu_queue.wait_and_throw();
+    cpu_queue.wait_and_throw();
+    final_table.assert_flags_to_cpu();
+    // std::cout << "Final result:\n" << final_table << std::endl;
+    save_result(final_table, data_path);
+    gpu_queue.wait_and_throw();
+    cpu_queue.wait_and_throw();
     #endif
 
     return duration;
@@ -918,31 +931,39 @@ int data_driven_operator_replacement(int argc, char **argv)
     }
 
     tables[0].move_column_to_device(0);
+    tables[0].move_column_to_device(2);
     tables[0].move_column_to_device(3);
     tables[0].move_column_to_device(4);
 
     tables[1].move_column_to_device(0);
+    tables[1].move_column_to_device(3);
     tables[1].move_column_to_device(4);
     tables[1].move_column_to_device(5);
 
     tables[2].move_column_to_device(0);
+    tables[2].move_column_to_device(3);
     tables[2].move_column_to_device(4);
+    tables[2].move_column_to_device(5);
 
     tables[3].move_column_to_device(0);
     tables[3].move_column_to_device(4);
+    tables[3].move_column_to_device(5);
 
-    // tables[4].move_column_to_device(2);
-    tables[4].move_column_to_device(3);
-    // tables[4].move_column_to_device(4);
-    tables[4].move_column_to_device(5);
+    tables[4].move_column_to_device(2, { false, true, false });
+    tables[4].move_column_to_device(3, { true, true, false });
+    tables[4].move_column_to_device(4, { true, true, false });
+    tables[4].move_column_to_device(5, { true, false, false });
+
     // tables[4].move_column_to_device(8);
     // tables[4].move_column_to_device(9);
     // tables[4].move_column_to_device(11);
     // tables[4].move_column_to_device(12);
     // tables[4].move_column_to_device(13);
     // tables[4].move_column_to_device(14);
+
     // for (int i = 0; i < MAX_NTABLES; i++)
     //     tables[i].move_all_to_device();
+
     gpu_queue.wait_and_throw();
 
     // std::cout << "All tables moved to device." << std::endl;

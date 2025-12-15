@@ -125,7 +125,8 @@ public:
                 for (uint64_t j = 0; j < table.current_columns.size(); j++)
                 {
                     const Column *col = table.current_columns[j];
-                    out << (col->get_is_aggregate_result() ? col->get_aggregate_value(i) : col->operator[](i)) << ((j < table.current_columns.size() - 1) ? " " : "");
+                    if (col != nullptr && col->get_segments().size() > 0)
+                        out << (col->get_is_aggregate_result() ? col->get_aggregate_value(i) : col->operator[](i)) << ((j < table.current_columns.size() - 1) ? " " : "");
                 }
                 out << "\n";
             }
@@ -581,8 +582,6 @@ public:
             false
             #endif
         );
-        pending_kernels_dependencies_gpu = dependencies.first;
-        pending_kernels_dependencies_cpu = dependencies.second;
 
         return count_true_flags(
             on_device ? flags_gpu : flags_host,
@@ -879,10 +878,7 @@ public:
                     nrows,
                     gpu_queue,
                     cpu_queue,
-                    cpu_allocator,
-                    gpu_allocator,
-                    true,
-                    false
+                    cpu_allocator
                 );
 
                 // TODO better way
@@ -904,19 +900,11 @@ public:
                     return;
                 }
 
-                bool on_device = true;
-                for (const auto &operand : expr.operands)
-                    if (operand.exprType == ExprOption::COLUMN && on_device)
-                        on_device = current_columns[operand.input]->is_all_on_device();
-
                 Column &new_col = materialized_columns.emplace_back(
                     nrows,
                     gpu_queue,
                     cpu_queue,
-                    cpu_allocator,
-                    gpu_allocator,
-                    on_device,
-                    false
+                    cpu_allocator
                 );
 
                 std::vector<KernelBundle> ops;
@@ -941,7 +929,11 @@ public:
                         const Segment &segment_a = segments_a[segment_number];
                         const Segment &segment_b = segments_b[segment_number];
                         Segment &segment_result = segments_result[segment_number];
+                        bool on_device = segment_a.is_on_device() && segment_b.is_on_device();
                         KernelBundle bundle(on_device);
+
+                        if (on_device)
+                            segment_result.build_on_device(gpu_allocator);
 
                         bundle.add_kernel(
                             KernelData(
@@ -967,7 +959,11 @@ public:
                     {
                         const Segment &segment = segments[segment_number];
                         Segment &segment_result = segments_result[segment_number];
+                        bool on_device = segment.is_on_device();
                         KernelBundle bundle(on_device);
+
+                        if (on_device)
+                            segment_result.build_on_device(gpu_allocator);
 
                         bundle.add_kernel(
                             KernelData(
@@ -993,13 +989,11 @@ public:
                     {
                         const Segment &segment = segments[segment_number];
                         Segment &segment_result = segments_result[segment_number];
+                        bool on_device = segment.is_on_device();
                         KernelBundle bundle(on_device);
 
-                        if (segment_result.is_on_device() != on_device)
-                        {
-                            std::cerr << "Project operation: Mismatched segment locations between columns" << std::endl;
-                            return;
-                        }
+                        if (on_device)
+                            segment_result.build_on_device(gpu_allocator);
 
                         bundle.add_kernel(
                             KernelData(
@@ -1106,20 +1100,10 @@ public:
                 pending_kernels_dependencies_cpu = dependencies.second;
                 #endif
             }
-
-            Column &result_column = materialized_columns.emplace_back(
-                1,
-                gpu_queue,
-                cpu_queue,
-                cpu_allocator,
-                gpu_allocator,
-                on_device,
-                true
-            );
-
-            Segment &result_segment = result_column.get_segments()[0];
-
-            uint64_t *final_result = result_segment.get_aggregate_data(on_device);
+            uint64_t *final_result = (on_device ?
+                gpu_allocator.alloc<uint64_t>(1, true) :
+                cpu_allocator.alloc<uint64_t>(1, true)
+                );
 
             agg_bundles.reserve(input_segments.size());
 
@@ -1159,6 +1143,16 @@ public:
             flags_modified_host = { false };
 
             nrows = 1;
+
+            Column &result_column = materialized_columns.emplace_back(
+                final_result,
+                on_device,
+                gpu_queue,
+                cpu_queue,
+                gpu_allocator,
+                cpu_allocator,
+                nrows
+            );
 
             current_columns.clear();
             current_columns.push_back(&result_column);
@@ -1277,9 +1271,7 @@ public:
             }
 
             uint64_t *aggregate_result = allocator.alloc<uint64_t>(prod_ranges, true);
-
             unsigned *temp_flags = allocator.alloc<unsigned>(prod_ranges, true);
-
             int **results = allocator.alloc<int *>(group.size(), !on_device);
 
             for (int i = 0; i < group.size(); i++)
@@ -1513,114 +1505,144 @@ public:
             std::cout << "Applying full join" << std::endl;
             #endif
 
-            bool on_device = right_table.current_columns[right_column]->is_all_on_device() &&
-                right_table.group_by_column->is_all_on_device() &&
-                current_columns[left_column]->is_all_on_device(),
-                need_flag_sync = false;
+            auto probe_col_locations = current_columns[left_column]->get_positions();
+
+            bool can_build_on_device = right_table.current_columns[right_column]->is_all_on_device() &&
+                right_table.group_by_column->is_all_on_device();
 
             #if not PERFORMANCE_MEASUREMENT_ACTIVE
             std::cout << "Join hash table will be built on "
-                << (on_device ? "GPU" : "CPU")
+                << (can_build_on_device && probe_col_locations.first ? "GPU" : "CPU")
+                << (can_build_on_device && probe_col_locations.first && probe_col_locations.second ? " and CPU" : "")
                 << std::endl;
             #endif
 
-            auto ht_data = right_table.build_key_vals_hash_table(
-                right_column,
-                on_device,
-                gpu_allocator,
+            Column &new_column = materialized_columns.emplace_back(
+                nrows,
+                gpu_queue,
+                cpu_queue,
                 cpu_allocator
             );
 
-            auto ht_dependencies = right_table.execute_pending_kernels();
-
-            pending_kernels_dependencies_gpu.insert(
-                pending_kernels_dependencies_gpu.end(),
-                ht_dependencies.first.begin(),
-                ht_dependencies.first.end()
-            );
-            pending_kernels_dependencies_cpu.insert(
-                pending_kernels_dependencies_cpu.end(),
-                ht_dependencies.second.begin(),
-                ht_dependencies.second.end()
-            );
-
-            int *ht = std::get<0>(ht_data);
-            int build_min_value = std::get<1>(ht_data),
-                build_max_value = std::get<2>(ht_data);
-
-            if (on_device)
-            {
-                for (bool modified : flags_modified_host)
-                {
-                    if (modified)
-                    {
-                        need_flag_sync = true;
-                        break;
-                    }
-                }
-            }
-            else
-            {
-                for (bool modified : flags_modified_gpu)
-                {
-                    if (modified)
-                    {
-                        need_flag_sync = true;
-                        break;
-                    }
-                }
-            }
-            if (need_flag_sync)
-            {
-                auto dependencies = execute_pending_kernels();
-                pending_kernels_dependencies_gpu = dependencies.first;
-                pending_kernels_dependencies_cpu = dependencies.second;
-
-                update_flags(on_device, gpu_allocator, cpu_allocator);
-
-                dependencies = execute_pending_kernels(
-                    #if USE_FUSION
-                    false
-                    #endif
-                );
-                #if USE_FUSION
-                gpu_queue.wait_and_throw();
-                cpu_queue.wait_and_throw();
-                #else
-                pending_kernels_dependencies_gpu = dependencies.first;
-                pending_kernels_dependencies_cpu = dependencies.second;
-                #endif
-            }
-
             auto min_max_gb = right_table.group_by_column->get_min_max();
-
-            auto join_data = current_columns[left_column]->full_join_operation(
-                on_device ? flags_gpu : flags_host,
-                build_min_value,
-                build_max_value,
-                min_max_gb.first,
-                min_max_gb.second,
-                ht,
-                gpu_allocator,
-                cpu_allocator,
-                gpu_queue,
-                cpu_queue,
-                on_device
-            );
-
-            pending_kernels.push_back(join_data.first);
 
             uint64_t group_by_col_index = current_columns.size() + right_table.group_by_column_index;
 
             for (int i = 0; i < right_table.current_columns.size(); i++)
                 current_columns.push_back(nullptr);
 
-            materialized_columns.push_back(std::move(join_data.second));
-
             current_columns[group_by_col_index] = &materialized_columns[materialized_columns.size() - 1];
 
-            std::vector<bool> &flags_modified = on_device ? flags_modified_gpu : flags_modified_host;
-            std::fill(flags_modified.begin(), flags_modified.end(), true);
+            int *ht = nullptr, build_min_value, build_max_value;
+
+            if (can_build_on_device && probe_col_locations.first)
+            {
+                auto ht_data = right_table.build_key_vals_hash_table(
+                    right_column,
+                    true,
+                    gpu_allocator,
+                    cpu_allocator
+                );
+
+                auto ht_dependencies = right_table.execute_pending_kernels();
+
+                pending_kernels_dependencies_gpu.insert(
+                    pending_kernels_dependencies_gpu.end(),
+                    ht_dependencies.first.begin(),
+                    ht_dependencies.first.end()
+                );
+                pending_kernels_dependencies_cpu.insert(
+                    pending_kernels_dependencies_cpu.end(),
+                    ht_dependencies.second.begin(),
+                    ht_dependencies.second.end()
+                );
+
+                ht = std::get<0>(ht_data);
+                build_min_value = std::get<1>(ht_data);
+                build_max_value = std::get<2>(ht_data);
+
+                auto join_ops = current_columns[left_column]->full_join_operation(
+                    flags_gpu,
+                    build_min_value,
+                    build_max_value,
+                    min_max_gb.first,
+                    min_max_gb.second,
+                    ht,
+                    new_column,
+                    gpu_allocator,
+                    gpu_queue,
+                    cpu_queue,
+                    true,
+                    false,
+                    flags_modified_gpu
+                );
+
+                pending_kernels.push_back(join_ops);
+            }
+
+            if (probe_col_locations.second || !(can_build_on_device && probe_col_locations.first))
+            {
+                int *ht_host;
+                if (ht == nullptr)
+                {
+                    auto ht_data = right_table.build_key_vals_hash_table(
+                        right_column,
+                        false,
+                        gpu_allocator,
+                        cpu_allocator
+                    );
+
+                    auto ht_dependencies = right_table.execute_pending_kernels();
+
+                    pending_kernels_dependencies_gpu.insert(
+                        pending_kernels_dependencies_gpu.end(),
+                        ht_dependencies.first.begin(),
+                        ht_dependencies.first.end()
+                    );
+                    pending_kernels_dependencies_cpu.insert(
+                        pending_kernels_dependencies_cpu.end(),
+                        ht_dependencies.second.begin(),
+                        ht_dependencies.second.end()
+                    );
+
+                    ht_host = std::get<0>(ht_data);
+                    build_min_value = std::get<1>(ht_data);
+                    build_max_value = std::get<2>(ht_data);
+                }
+                else
+                {
+                    ht_host = cpu_allocator.alloc<int>(
+                        (build_max_value - build_min_value + 1) * 2,
+                        true
+                    );
+                    pending_kernels_dependencies_cpu.push_back(
+                        gpu_queue.memcpy(
+                            ht_host,
+                            ht,
+                            (build_max_value - build_min_value + 1) * 2 * sizeof(int),
+                            pending_kernels_dependencies_gpu
+                        )
+                    );
+                }
+
+                auto join_ops = current_columns[left_column]->full_join_operation(
+                    flags_host,
+                    build_min_value,
+                    build_max_value,
+                    min_max_gb.first,
+                    min_max_gb.second,
+                    ht_host,
+                    new_column,
+                    gpu_allocator,
+                    gpu_queue,
+                    cpu_queue,
+                    false,
+                    !(can_build_on_device && probe_col_locations.first),
+                    flags_modified_host
+                );
+
+                pending_kernels.push_back(join_ops);
+            }
         }
     }
 };
