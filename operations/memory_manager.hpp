@@ -88,7 +88,7 @@ T *memory_manager::alloc(uint64_t count, bool on_device)
 void memory_manager::reset()
 {
     #if MEMORY_MANAGER_DEBUG_INFO
-    std::cout << "-----\nMemory manager reset. Total size: " << size_host << " bytes on host and " << size_device << " bytes on device.\nPreviously allocated: " << allocated_host << " bytes on host and " << allocated_device << " bytes on device.\n-----" << std::endl;
+    std::cout << "-----\nMemory manager reset. Total size: " << (size_host >> 20) << " MB on host and " << (size_device >> 20) << " MB on device.\nPreviously allocated: " << (allocated_host >> 20) << " MB on host and " << (allocated_device >> 20) << " MB on device.\n-----" << std::endl;
     #endif
 
     auto e1 = queue.memset(memory_region_device, 0, size_device);

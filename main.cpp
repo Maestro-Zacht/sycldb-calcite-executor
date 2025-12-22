@@ -420,12 +420,12 @@ std::chrono::duration<double, std::milli> execute_result(
             }
         }
 
-        if (rel.relOp != RelNodeType::TABLE_SCAN)
-        {
-            std::cout << "rows selected after operation " << id << ": "
-                << count_true_flags(tables[output_table[id]].flags, tables[output_table[id]].col_len, queue, dependencies[id])
-                << std::endl;
-        }
+        // if (rel.relOp != RelNodeType::TABLE_SCAN)
+        // {
+        //     std::cout << "rows selected after operation " << id << ": "
+        //         << count_true_flags(tables[output_table[id]].flags, tables[output_table[id]].col_len, queue, dependencies[id])
+        //         << std::endl;
+        // }
     }
 
     #if USE_FUSION
@@ -930,29 +930,29 @@ int data_driven_operator_replacement(int argc, char **argv)
         std::cout << table.get_name() << " num segments: " << table.num_segments() << std::endl;
     }
 
-    tables[0].move_column_to_device(0);
-    tables[0].move_column_to_device(2);
-    tables[0].move_column_to_device(3);
-    tables[0].move_column_to_device(4);
+    // tables[0].move_column_to_device(0);
+    // tables[0].move_column_to_device(2);
+    // tables[0].move_column_to_device(3);
+    // tables[0].move_column_to_device(4);
 
-    tables[1].move_column_to_device(0);
-    tables[1].move_column_to_device(3);
-    tables[1].move_column_to_device(4);
-    tables[1].move_column_to_device(5);
+    // tables[1].move_column_to_device(0);
+    // tables[1].move_column_to_device(3);
+    // tables[1].move_column_to_device(4);
+    // tables[1].move_column_to_device(5);
 
-    tables[2].move_column_to_device(0);
-    tables[2].move_column_to_device(3);
-    tables[2].move_column_to_device(4);
-    tables[2].move_column_to_device(5);
+    // tables[2].move_column_to_device(0);
+    // tables[2].move_column_to_device(3);
+    // tables[2].move_column_to_device(4);
+    // tables[2].move_column_to_device(5);
 
-    tables[3].move_column_to_device(0);
-    tables[3].move_column_to_device(4);
-    tables[3].move_column_to_device(5);
+    // tables[3].move_column_to_device(0);
+    // tables[3].move_column_to_device(4);
+    // tables[3].move_column_to_device(5);
 
-    tables[4].move_column_to_device(2, { false, true, false });
-    tables[4].move_column_to_device(3, { true, true, false });
-    tables[4].move_column_to_device(4, { true, true, false });
-    tables[4].move_column_to_device(5, { true, false, false });
+    // tables[4].move_column_to_device(2);
+    // tables[4].move_column_to_device(3);
+    // tables[4].move_column_to_device(4);
+    // tables[4].move_column_to_device(5);
 
     // tables[4].move_column_to_device(8);
     // tables[4].move_column_to_device(9);
@@ -990,10 +990,10 @@ int data_driven_operator_replacement(int argc, char **argv)
         #if PERFORMANCE_MEASUREMENT_ACTIVE
         std::string sql_filename = argv[1];
         std::string query_name = sql_filename.substr(sql_filename.find_last_of("/") + 1, 3);
-        std::ofstream perf_file(query_name + "-performance-cpu-s100.log", std::ios::out | std::ios::trunc);
+        std::ofstream perf_file(query_name + "-performance-cpu-s160.log", std::ios::out | std::ios::trunc);
         if (!perf_file.is_open())
         {
-            std::cerr << "Could not open performance log file: " << query_name << "-performance-cpu-s100.log" << std::endl;
+            std::cerr << "Could not open performance log file: " << query_name << "-performance-cpu-s160.log" << std::endl;
             return 1;
         }
 
@@ -1102,8 +1102,7 @@ int test()
         #endif
     };
 
-    uint64_t N = ((uint64_t)1 << 30),
-        reps = 50;
+    uint64_t N = ((uint64_t)1 << 30);
 
     int *data_gpu = sycl::malloc_device<int>(N, gpu_queue);
     int *data_cpu = sycl::malloc_device<int>(N, cpu_queue);
@@ -1114,43 +1113,19 @@ int test()
     cpu_event.wait();
     gpu_event.wait();
 
-    for (int i = 0; i < reps; i++)
-    {
-        auto e1 = gpu_queue.submit(
-            [&](sycl::handler &cgh)
-            {
-                cgh.depends_on(gpu_event);
-                cgh.parallel_for(
-                    sycl::range<1>{N},
-                    [=](sycl::id<1> idx)
-                    {
-                        data_gpu[idx] += 1;
-                    }
-                );
-            }
-        );
-        gpu_event = e1;
+    gpu_queue.memcpy(data_cpu, data_gpu, N * sizeof(int)).wait();
 
-        auto e2 = cpu_queue.submit(
-            [&](sycl::handler &cgh)
-            {
-                cgh.depends_on(cpu_event);
-                cgh.parallel_for(
-                    sycl::range<1>{N},
-                    [=](sycl::id<1> idx)
-                    {
-                        data_cpu[idx] += 1;
-                    }
-                );
-            }
-        );
-        cpu_event = e2;
-    }
+    int *host_data = sycl::malloc_host<int>(N, gpu_queue);
+    gpu_queue.memcpy(host_data, data_gpu, N * sizeof(int)).wait();
 
+    int *host_data2 = sycl::malloc_host<int>(N, cpu_queue);
+    gpu_queue.memcpy(host_data2, data_gpu, N * sizeof(int)).wait();
 
 
     sycl::free(data_gpu, gpu_queue);
     sycl::free(data_cpu, cpu_queue);
+    sycl::free(host_data, gpu_queue);
+    sycl::free(host_data2, cpu_queue);
 
     return 0;
 }
