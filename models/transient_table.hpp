@@ -11,39 +11,6 @@
 
 #include "../kernels/common.hpp"
 
-
-uint64_t count_true_flags(
-    const bool *flags,
-    int len,
-    sycl::queue &queue,
-    const std::vector<sycl::event> &dependencies = {})
-{
-    uint64_t *count = sycl::malloc_shared<uint64_t>(1, queue);
-
-    queue.submit(
-        [&](sycl::handler &cgh)
-        {
-            cgh.depends_on(dependencies);
-            cgh.parallel_for(
-                sycl::range<1>(len),
-                sycl::reduction(
-                    count,
-                    sycl::plus<>(),
-                    sycl::property::reduction::initialize_to_identity()
-                ),
-                [=](sycl::id<1> idx, auto &sum)
-                {
-                    if (flags[idx[0]])
-                        sum.combine(1);
-                }
-            );
-        }
-    ).wait();
-    uint64_t result = *count;
-    sycl::free(count, queue);
-    return result;
-}
-
 class TransientTable
 {
 private:
@@ -569,19 +536,23 @@ public:
         }
     }
 
-    uint64_t count_flags_true(bool on_device, memory_manager &gpu_allocator, memory_manager &cpu_allocator)
+    uint64_t count_flags_true(bool on_device, memory_manager &gpu_allocator, memory_manager &cpu_allocator, bool do_flags_update = true)
     {
         auto dependencies = execute_pending_kernels();
-        pending_kernels_dependencies_gpu = dependencies.first;
-        pending_kernels_dependencies_cpu = dependencies.second;
 
-        update_flags(on_device, gpu_allocator, cpu_allocator);
+        if (do_flags_update)
+        {
+            pending_kernels_dependencies_gpu = dependencies.first;
+            pending_kernels_dependencies_cpu = dependencies.second;
 
-        dependencies = execute_pending_kernels(
-            #if USE_FUSION
-            false
-            #endif
-        );
+            update_flags(on_device, gpu_allocator, cpu_allocator);
+
+            dependencies = execute_pending_kernels(
+                #if USE_FUSION
+                false
+                #endif
+            );
+        }
 
         return count_true_flags(
             on_device ? flags_gpu : flags_host,
@@ -589,6 +560,142 @@ public:
             on_device ? gpu_queue : cpu_queue,
             on_device ? dependencies.first : dependencies.second
         );
+    }
+
+    std::tuple<int *, sycl::event, int *, sycl::event, uint64_t> build_row_ids(int segment_n, int segment_size, memory_manager &gpu_allocator, memory_manager &cpu_allocator)
+    {
+        int *row_id_index = gpu_allocator.alloc<int>(1, true);
+        bool *flags = flags_gpu + segment_n * SEGMENT_SIZE;
+        uint64_t n_rows_new = count_true_flags(
+            flags,
+            segment_size,
+            gpu_queue
+        );
+        int *row_ids_gpu = gpu_allocator.alloc<int>(n_rows_new, true);
+        sycl::event e_row_id_gpu = gpu_queue.submit(
+            [&](sycl::handler &cgh)
+            {
+                cgh.parallel_for(
+                    segment_size,
+                    [=](sycl::id<1> idx)
+                    {
+                        auto id = idx[0];
+                        if (flags[id])
+                        {
+                            sycl::atomic_ref<
+                                int,
+                                sycl::memory_order::relaxed,
+                                sycl::memory_scope::device,
+                                sycl::access::address_space::global_space
+                            > row_idx_atomic(*row_id_index);
+                            int pos = row_idx_atomic.fetch_add(1);
+                            row_ids_gpu[pos] = id;
+                        }
+                    }
+                );
+            }
+        );
+        int *row_ids_host = gpu_allocator.alloc<int>(n_rows_new, false);
+        sycl::event e_row_id_host = gpu_queue.memcpy(
+            row_ids_host,
+            row_ids_gpu,
+            n_rows_new * sizeof(int),
+            e_row_id_gpu
+        );
+
+        return { row_ids_gpu, e_row_id_gpu, row_ids_host, e_row_id_host, n_rows_new };
+    }
+
+    // This is a sync point
+    void compress_and_sync(memory_manager &gpu_allocator, memory_manager &cpu_allocator, const std::vector<Column *> &columns_to_sync)
+    {
+        int num_segments = nrows / SEGMENT_SIZE + (nrows % SEGMENT_SIZE > 0);
+
+        gpu_queue.wait_and_throw();
+        cpu_queue.wait_and_throw();
+
+        for (int i = 0; i < num_segments; i++)
+        {
+            int *row_ids_host = nullptr,
+                *row_ids_gpu = nullptr;
+            sycl::event e_row_id_host,
+                e_row_id_gpu;
+            uint64_t n_rows_new = 0;
+
+            uint64_t segment_size = (i == num_segments - 1) ? (nrows - i * SEGMENT_SIZE) : SEGMENT_SIZE;
+
+            if (flags_modified_gpu[i])
+            {
+                auto row_id_res = build_row_ids(i, segment_size, gpu_allocator, cpu_allocator);
+                row_ids_gpu = std::get<0>(row_id_res);
+                e_row_id_gpu = std::get<1>(row_id_res);
+                row_ids_host = std::get<2>(row_id_res);
+                e_row_id_host = std::get<3>(row_id_res);
+                n_rows_new = std::get<4>(row_id_res);
+            }
+
+            for (const Column *col : columns_to_sync)
+            {
+                Segment &seg = const_cast<Segment &>(col->get_segments()[i]);
+                if (seg.needs_copy_on(false))
+                {
+                    if (row_ids_gpu == nullptr)
+                    {
+                        auto row_id_res = build_row_ids(i, segment_size, gpu_allocator, cpu_allocator);
+                        row_ids_gpu = std::get<0>(row_id_res);
+                        e_row_id_gpu = std::get<1>(row_id_res);
+                        row_ids_host = std::get<2>(row_id_res);
+                        e_row_id_host = std::get<3>(row_id_res);
+                        n_rows_new = std::get<4>(row_id_res);
+                    }
+
+                    seg.compress_sync(
+                        row_ids_gpu,
+                        e_row_id_gpu,
+                        row_ids_host,
+                        e_row_id_host,
+                        n_rows_new,
+                        gpu_allocator,
+                        cpu_allocator
+                    );
+                }
+            }
+
+            if (flags_modified_gpu[i])
+            {
+                if (flags_modified_host[i])
+                {
+                    std::cerr << "Both flags modified on GPU and CPU during compress_and_sync." << std::endl;
+                    throw std::runtime_error("Both flags modified on GPU and CPU during compress_and_sync.");
+                }
+                bool *flags = flags_host + i * SEGMENT_SIZE;
+                auto e_memset = cpu_queue.memset(
+                    flags,
+                    0,
+                    segment_size * sizeof(bool)
+                );
+                cpu_queue.submit(
+                    [&](sycl::handler &cgh)
+                    {
+                        cgh.depends_on(e_row_id_host);
+                        cgh.depends_on(e_memset);
+                        cgh.parallel_for(
+                            n_rows_new,
+                            [=](sycl::id<1> idx)
+                            {
+                                auto i = idx[0];
+                                int row_id = row_ids_host[i];
+                                flags[row_id] = true;
+                            }
+                        );
+                    }
+                );
+                flags_modified_gpu[i] = false;
+            }
+        }
+
+        gpu_queue.wait_and_throw();
+        cpu_queue.wait_and_throw();
     }
 
     std::tuple<bool *, int, int, bool> build_keys_hash_table(int column, memory_manager &gpu_allocator, memory_manager &cpu_allocator)
@@ -878,6 +985,7 @@ public:
                     nrows,
                     gpu_queue,
                     cpu_queue,
+                    gpu_allocator,
                     cpu_allocator
                 );
 
@@ -904,6 +1012,7 @@ public:
                     nrows,
                     gpu_queue,
                     cpu_queue,
+                    gpu_allocator,
                     cpu_allocator
                 );
 
@@ -1193,41 +1302,10 @@ public:
                 }
             }
 
-            if (need_flag_sync)
-            {
-                // std::cout << "Executing pending kernels before flag sync\nDeps gpu: "
-                //     << pending_kernels_dependencies_gpu.size()
-                //     << ", cpu: "
-                //     << pending_kernels_dependencies_cpu.size()
-                //     << std::endl;
-                auto dependencies = execute_pending_kernels();
-                pending_kernels_dependencies_gpu = dependencies.first;
-                pending_kernels_dependencies_cpu = dependencies.second;
-                // std::cout << "After executing pending kernels before flag sync\nDeps gpu: "
-                //     << pending_kernels_dependencies_gpu.size()
-                //     << ", cpu: "
-                //     << pending_kernels_dependencies_cpu.size()
-                //     << std::endl;
+            need_data_sync = agg_column->needs_copy_on(on_device);
+            for (int i = 0; i < group.size() && !need_data_sync; i++)
+                need_data_sync = current_columns[group[i]]->needs_copy_on(on_device);
 
-                update_flags(on_device, gpu_allocator, cpu_allocator);
-            }
-
-            auto agg_col_sync_data = agg_column->ensure_data_on(on_device);
-            if (agg_col_sync_data.second)
-            {
-                pending_kernels.push_back(agg_col_sync_data.first);
-                need_data_sync = true;
-            }
-
-            for (int i = 0; i < group.size(); i++)
-            {
-                auto col_sync_data = current_columns[group[i]]->ensure_data_on(on_device);
-                if (col_sync_data.second)
-                {
-                    pending_kernels.push_back(col_sync_data.first);
-                    need_data_sync = true;
-                }
-            }
 
             if (need_data_sync || need_flag_sync)
             {
@@ -1236,24 +1314,21 @@ public:
                 //     << ", cpu: "
                 //     << pending_kernels_dependencies_cpu.size()
                 //     << std::endl;
-                auto dependencies = execute_pending_kernels(
-                    #if USE_FUSION
-                    false
-                    #endif
-                );
-                #if USE_FUSION
-                gpu_queue.wait_and_throw();
-                cpu_queue.wait_and_throw();
-                #else
-                pending_kernels_dependencies_gpu = dependencies.first;
-                pending_kernels_dependencies_cpu = dependencies.second;
-                #endif
+                execute_pending_kernels();
 
-                // std::cout << "After executing flag/data sync kernels before aggregate."
-                //     // << pending_kernels_dependencies_gpu.size()
-                //     // << ", cpu: "
-                //     // << pending_kernels_dependencies_cpu.size()
-                //     << std::endl;
+                std::vector<Column *> columns_to_sync;
+                if (need_data_sync)
+                {
+                    columns_to_sync.reserve(group.size() + 1);
+                    columns_to_sync.push_back(const_cast<Column *>(agg_column));
+                    for (int i = 0; i < group.size(); i++)
+                        columns_to_sync.push_back(current_columns[group[i]]);
+                }
+                compress_and_sync(
+                    gpu_allocator,
+                    cpu_allocator,
+                    columns_to_sync
+                );
             }
 
             memory_manager &allocator = on_device ? gpu_allocator : cpu_allocator;
@@ -1521,7 +1596,9 @@ public:
                 nrows,
                 gpu_queue,
                 cpu_queue,
-                cpu_allocator
+                gpu_allocator,
+                cpu_allocator,
+                true
             );
 
             auto min_max_gb = right_table.group_by_column->get_min_max();

@@ -89,7 +89,9 @@ public:
     Segment(
         sycl::queue &gpu_queue,
         sycl::queue &cpu_queue,
+        memory_manager &gpu_allocator,
         memory_manager &cpu_allocator,
+        bool use_alloc_host = false,
         uint64_t count = SEGMENT_SIZE
     )
         :
@@ -108,7 +110,10 @@ public:
             throw std::bad_alloc();
         }
 
-        data_host = cpu_allocator.alloc<int>(count, true);
+        if (use_alloc_host)
+            data_host = gpu_allocator.alloc<int>(count, false);
+        else
+            data_host = cpu_allocator.alloc<int>(count, true);
     }
 
     Segment(
@@ -138,7 +143,7 @@ public:
         if (on_device)
         {
             data_device = reinterpret_cast<int *>(init_data);
-            data_host = reinterpret_cast<int *>(cpu_allocator.alloc<uint64_t>(count, true));
+            data_host = reinterpret_cast<int *>(gpu_allocator.alloc<uint64_t>(count, false));
         }
         else
         {
@@ -177,7 +182,7 @@ public:
         if (on_device)
         {
             data_device = init_data;
-            data_host = cpu_allocator.alloc<int>(count, true);
+            data_host = gpu_allocator.alloc<int>(count, false);
         }
         else
         {
@@ -718,6 +723,71 @@ public:
             prod_ranges
         );
     }
+
+
+    // assumption: sync point. needs to be improved
+    sycl::event compress_sync(
+        int *row_ids_gpu,
+        sycl::event &e_row_id_gpu,
+        int *row_ids_host,
+        sycl::event &e_row_id_host,
+        uint64_t nrows_selected,
+        memory_manager &gpu_allocator,
+        memory_manager &cpu_allocator)
+    {
+        if (is_aggregate_result)
+        {
+            std::cerr << "Compress operator: cannot compress aggregate result segment" << std::endl;
+            throw std::runtime_error("Compress operator: cannot compress aggregate result segment");
+        }
+        if (!on_device)
+        {
+            std::cerr << "Compress operator: segment not on device" << std::endl;
+            throw std::runtime_error("Compress operator: segment not on device");
+        }
+
+        int *data_device_compressed = gpu_allocator.alloc<int>(nrows_selected, true);
+        int *data_host_compressed = gpu_allocator.alloc<int>(nrows_selected, false);
+        int *device_ptr = data_device;
+        int *host_ptr = data_host;
+
+        auto e1 = gpu_queue.submit(
+            [&](sycl::handler &cgh)
+            {
+                cgh.depends_on(e_row_id_gpu);
+                cgh.parallel_for(
+                    nrows_selected,
+                    [=](sycl::id<1> idx)
+                    {
+                        auto i = idx[0];
+                        int row_id = row_ids_gpu[i];
+                        data_device_compressed[i] = device_ptr[row_id];
+                    }
+                );
+            }
+        );
+
+        auto e2 = gpu_queue.memcpy(data_host_compressed, data_device_compressed, nrows_selected * sizeof(int), e1);
+
+        auto e3 = cpu_queue.submit(
+            [&](sycl::handler &cgh)
+            {
+                cgh.depends_on(e2);
+                cgh.depends_on(e_row_id_host);
+                cgh.parallel_for(
+                    nrows_selected,
+                    [=](sycl::id<1> idx)
+                    {
+                        auto i = idx[0];
+                        int row_id = row_ids_host[i];
+                        host_ptr[row_id] = data_host_compressed[i];
+                    }
+                );
+            }
+        );
+
+        return e3;
+    }
 };
 
 
@@ -751,7 +821,9 @@ public:
         uint64_t nrows,
         sycl::queue &gpu_queue,
         sycl::queue &cpu_queue,
-        memory_manager &cpu_allocator)
+        memory_manager &gpu_allocator,
+        memory_manager &cpu_allocator,
+        bool use_alloc_host = false)
         : is_aggregate_result(false)
     {
         uint64_t full_segments = nrows / SEGMENT_SIZE,
@@ -760,10 +832,10 @@ public:
         segments.reserve(full_segments + (remainder > 0));
 
         for (uint64_t i = 0; i < full_segments; i++)
-            segments.emplace_back(gpu_queue, cpu_queue, cpu_allocator);
+            segments.emplace_back(gpu_queue, cpu_queue, gpu_allocator, cpu_allocator, use_alloc_host);
 
         if (remainder > 0)
-            segments.emplace_back(gpu_queue, cpu_queue, cpu_allocator, remainder);
+            segments.emplace_back(gpu_queue, cpu_queue, gpu_allocator, cpu_allocator, use_alloc_host, remainder);
     }
 
     Column(
@@ -947,6 +1019,14 @@ public:
         for (const auto &seg : segments)
             total_size += seg.get_data_size(gpu_only);
         return total_size;
+    }
+
+    bool needs_copy_on(bool device) const
+    {
+        for (const auto &seg : segments)
+            if (seg.needs_copy_on(device))
+                return true;
+        return false;
     }
 
     std::pair<std::vector<KernelBundle>, bool> ensure_data_on(bool device) const
