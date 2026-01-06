@@ -569,7 +569,8 @@ public:
         uint64_t n_rows_new = count_true_flags(
             flags,
             segment_size,
-            gpu_queue
+            gpu_queue,
+            gpu_allocator
         );
         int *row_ids_gpu = gpu_allocator.alloc<int>(n_rows_new, true);
         sycl::event e_row_id_gpu = gpu_queue.submit(

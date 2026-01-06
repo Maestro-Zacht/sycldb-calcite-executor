@@ -40,3 +40,34 @@ uint64_t count_true_flags(
     sycl::free(count, queue);
     return result;
 }
+
+uint64_t count_true_flags(
+    const bool *flags,
+    int len,
+    sycl::queue &queue,
+    memory_manager &allocator,
+    const std::vector<sycl::event> &dependencies = {})
+{
+    uint64_t *count = allocator.alloc<uint64_t>(1, true),
+        *result = allocator.alloc<uint64_t>(1, false);
+
+    auto e = queue.submit(
+        [&](sycl::handler &cgh)
+        {
+            cgh.depends_on(dependencies);
+            cgh.parallel_for(
+                sycl::range<1>(len),
+                sycl::reduction(
+                    count,
+                    sycl::plus<>()
+                ),
+                [=](sycl::id<1> idx, auto &sum)
+                {
+                    sum.combine(flags[idx[0]]);
+                }
+            );
+        }
+    );
+    queue.memcpy(result, count, sizeof(uint64_t), e).wait();
+    return *result;
+}

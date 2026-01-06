@@ -23,7 +23,7 @@ public:
 };
 
 memory_manager::memory_manager(sycl::queue &queue, uint64_t size)
-    : size_device(size), size_host(size >> 2), queue(queue)
+    : size_device(size), size_host(size >> 1), queue(queue)
 {
     #if MEMORY_MANAGER_DEBUG_INFO
     std::cout << "Allocating memory region of size " << size_device << " bytes on device and " << size_host << " bytes on host." << std::endl;
