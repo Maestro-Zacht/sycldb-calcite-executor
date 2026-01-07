@@ -675,22 +675,31 @@ public:
                     0,
                     segment_size * sizeof(bool)
                 );
-                cpu_queue.submit(
-                    [&](sycl::handler &cgh)
-                    {
-                        cgh.depends_on(e_row_id_host);
-                        cgh.depends_on(e_memset);
-                        cgh.parallel_for(
-                            n_rows_new,
-                            [=](sycl::id<1> idx)
-                            {
-                                auto i = idx[0];
-                                int row_id = row_ids_host[i];
-                                flags[row_id] = true;
-                            }
-                        );
-                    }
-                );
+                std::cout << "segment size: " << segment_size << " - row ids: [";
+                e_row_id_host.wait();
+                e_memset.wait();
+                for (uint64_t k = 0; k < n_rows_new; k++)
+                {
+                    std::cout << row_ids_host[k] << (k == n_rows_new - 1 ? "" : ", ");
+                    flags[row_ids_host[k]] = true;
+                }
+                std::cout << "]" << std::endl;
+                // cpu_queue.submit(
+                //     [&](sycl::handler &cgh)
+                //     {
+                //         cgh.depends_on(e_row_id_host);
+                //         cgh.depends_on(e_memset);
+                //         cgh.parallel_for(
+                //             n_rows_new,
+                //             [=](sycl::id<1> idx)
+                //             {
+                //                 auto i = idx[0];
+                //                 int row_id = row_ids_host[i];
+                //                 flags[row_id] = true;
+                //             }
+                //         );
+                //     }
+                // );
                 flags_modified_gpu[i] = false;
             }
         }

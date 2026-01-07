@@ -991,10 +991,10 @@ int data_driven_operator_replacement(int argc, char **argv)
         #if PERFORMANCE_MEASUREMENT_ACTIVE
         std::string sql_filename = argv[1];
         std::string query_name = sql_filename.substr(sql_filename.find_last_of("/") + 1, 3);
-        std::ofstream perf_file(query_name + "-performance-hybrid-s20.log", std::ios::out | std::ios::trunc);
+        std::ofstream perf_file(query_name + "-performance-hybrid-cxl-s160.log", std::ios::out | std::ios::trunc);
         if (!perf_file.is_open())
         {
-            std::cerr << "Could not open performance log file: " << query_name << "-performance-hybrid-s20.log" << std::endl;
+            std::cerr << "Could not open performance log file: " << query_name << "-performance-hybrid-cxl-s160.log" << std::endl;
             return 1;
         }
 
@@ -1021,7 +1021,10 @@ int data_driven_operator_replacement(int argc, char **argv)
             auto end = std::chrono::high_resolution_clock::now();
             std::chrono::duration<double, std::milli> total_time = end - start;
 
+            std::cout << "GPU: ";
             gpu_allocator.reset();
+
+            std::cout << "CPU: ";
             cpu_allocator.reset();
 
             end = std::chrono::high_resolution_clock::now();

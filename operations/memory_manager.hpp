@@ -23,7 +23,7 @@ public:
 };
 
 memory_manager::memory_manager(sycl::queue &queue, uint64_t size)
-    : size_device(size), size_host(size >> 1), queue(queue)
+    : size_device(size), size_host(size), queue(queue)
 {
     #if MEMORY_MANAGER_DEBUG_INFO
     std::cout << "Allocating memory region of size " << size_device << " bytes on device and " << size_host << " bytes on host." << std::endl;
@@ -87,9 +87,12 @@ T *memory_manager::alloc(uint64_t count, bool on_device)
 
 void memory_manager::reset()
 {
-    #if MEMORY_MANAGER_DEBUG_INFO
-    std::cout << "-----\nMemory manager reset. Total size: " << (size_host >> 20) << " MB on host and " << (size_device >> 20) << " MB on device.\nPreviously allocated: " << (allocated_host >> 20) << " MB on host and " << (allocated_device >> 20) << " MB on device.\n-----" << std::endl;
-    #endif
+    // #if MEMORY_MANAGER_DEBUG_INFO
+    std::cout << "reset "
+        << (allocated_device >> 20) << "/" << (size_device >> 20) << " MB on device and "
+        << (allocated_host >> 20) << "/" << (size_host >> 20) << " MB on host"
+        << std::endl;
+    // #endif
 
     auto e1 = queue.memset(memory_region_device, 0, size_device);
     auto e2 = queue.memset(memory_region_host, 0, size_host);

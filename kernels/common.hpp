@@ -57,13 +57,16 @@ uint64_t count_true_flags(
             cgh.depends_on(dependencies);
             cgh.parallel_for(
                 sycl::range<1>(len),
-                sycl::reduction(
-                    count,
-                    sycl::plus<>()
-                ),
-                [=](sycl::id<1> idx, auto &sum)
+                // sycl::reduction(count, sycl::plus<>()),
+                [=](sycl::id<1> idx)
                 {
-                    sum.combine(flags[idx[0]]);
+                    sycl::atomic_ref<
+                        uint64_t,
+                        sycl::memory_order::relaxed,
+                        sycl::memory_scope::device,
+                        sycl::access::address_space::global_space
+                    > count_atomic(*count);
+                    count_atomic.fetch_add(flags[idx[0]]);
                 }
             );
         }
