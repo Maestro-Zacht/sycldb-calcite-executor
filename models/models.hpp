@@ -767,7 +767,11 @@ public:
             }
         );
 
+        // e1.wait();
+
         auto e2 = gpu_queue.memcpy(data_host_compressed, data_device_compressed, nrows_selected * sizeof(int), e1);
+
+        // e2.wait();
 
         auto e3 = cpu_queue.submit(
             [&](sycl::handler &cgh)
@@ -785,6 +789,8 @@ public:
                 );
             }
         );
+
+        e3.wait();
 
         return e3;
     }
@@ -1072,7 +1078,7 @@ public:
 
         int ht_len = max_value - min_value + 1;
 
-        bool *ht = allocator.alloc<bool>(ht_len, true);
+        bool *ht = allocator.alloc_zero<bool>(ht_len);
 
         for (int i = 0; i < segments.size(); i++)
         {
@@ -1151,7 +1157,7 @@ public:
 
         int ht_len = max_value - min_value + 1;
 
-        int *ht = allocator.alloc<int>(ht_len * 2, true);
+        int *ht = allocator.alloc_zero<int>(ht_len * 2);
 
         for (int i = 0; i < segments.size(); i++)
         {

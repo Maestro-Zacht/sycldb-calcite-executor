@@ -465,8 +465,8 @@ std::tuple<
         results[i] = gpu_allocator.alloc<int>(prod_ranges, true);
     }
 
-    uint64_t *agg_result = gpu_allocator.alloc<uint64_t>(prod_ranges, true);
-    unsigned *res_flags = gpu_allocator.alloc<unsigned>(prod_ranges, true);
+    uint64_t *agg_result = gpu_allocator.alloc_zero<uint64_t>(prod_ranges);
+    unsigned *res_flags = gpu_allocator.alloc_zero<unsigned>(prod_ranges);
 
     #if PRINT_AGGREGATE_DEBUG_INFO
     end = std::chrono::high_resolution_clock::now();

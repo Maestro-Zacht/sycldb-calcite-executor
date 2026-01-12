@@ -179,7 +179,7 @@ std::chrono::duration<double, std::milli> execute_result(
             {
                 // filter join ht
                 int ht_len = column_info.max_value - column_info.min_value + 1;
-                bool *ht = gpu_allocator.alloc<bool>(ht_len, true);
+                bool *ht = gpu_allocator.alloc_zero<bool>(ht_len);
 
                 table_info.ht = ht;
                 table_info.ht_min = column_info.min_value;
@@ -189,7 +189,7 @@ std::chrono::duration<double, std::milli> execute_result(
             {
                 // full join ht
                 int ht_len = column_info.max_value - column_info.min_value + 1,
-                    *ht = gpu_allocator.alloc<int>(ht_len * 2, true);
+                    *ht = gpu_allocator.alloc_zero<int>(ht_len * 2);
 
                 table_info.ht = ht;
                 table_info.ht_min = column_info.min_value;
@@ -991,10 +991,10 @@ int data_driven_operator_replacement(int argc, char **argv)
         #if PERFORMANCE_MEASUREMENT_ACTIVE
         std::string sql_filename = argv[1];
         std::string query_name = sql_filename.substr(sql_filename.find_last_of("/") + 1, 3);
-        std::ofstream perf_file(query_name + "-performance-hybrid-cxl-s160.log", std::ios::out | std::ios::trunc);
+        std::ofstream perf_file(query_name + "-performance-hybrid-cxl-test.log", std::ios::out | std::ios::trunc);
         if (!perf_file.is_open())
         {
-            std::cerr << "Could not open performance log file: " << query_name << "-performance-hybrid-cxl-s160.log" << std::endl;
+            std::cerr << "Could not open performance log file: " << query_name << "-performance-hybrid-cxl-test.log" << std::endl;
             return 1;
         }
 
@@ -1027,6 +1027,9 @@ int data_driven_operator_replacement(int argc, char **argv)
             std::cout << "CPU: ";
             cpu_allocator.reset();
 
+            gpu_queue.wait_and_throw();
+            cpu_queue.wait_and_throw();
+
             end = std::chrono::high_resolution_clock::now();
             std::chrono::duration<double, std::milli> after_reset = end - start;
 
@@ -1034,10 +1037,6 @@ int data_driven_operator_replacement(int argc, char **argv)
                 << " - " << exec_time.count() << " ms - "
                 << total_time.count() << " ms - " << after_reset.count() << " ms" << std::endl;
             // perf_file << total_time.count() << '\n';
-
-            gpu_queue.wait_and_throw();
-            cpu_queue.wait_and_throw();
-            // sleep(1);
         }
         perf_file.close();
         #else
@@ -1106,30 +1105,24 @@ int test()
         #endif
     };
 
-    uint64_t N = ((uint64_t)1 << 30);
+    uint64_t N = ((uint64_t)1 << 30) + 68476485,
+        step = ((uint64_t)1 << 22),
+        num_segments = N / step + (N % step > 0);
 
-    int *data_gpu = sycl::malloc_device<int>(N, gpu_queue);
-    int *data_cpu = sycl::malloc_device<int>(N, cpu_queue);
+    bool *data = sycl::malloc_device<bool>(N, gpu_queue);
+    gpu_queue.fill<bool>(data, true, N).wait();
 
-    sycl::event gpu_event = gpu_queue.fill<int>(data_gpu, 1, N),
-        cpu_event = cpu_queue.fill<int>(data_cpu, 2, N);
+    for (int i = 0; i < num_segments; i++)
+    {
+        std::cout << "Setting segment " << i + 1 << "/" << num_segments << std::endl;
+        uint64_t segment_size = (i == num_segments - 1) ? (N - i * step) : step;
+        bool *flags = data + i * step;
+        gpu_queue.fill<bool>(flags, false, segment_size).wait();
+    }
 
-    cpu_event.wait();
-    gpu_event.wait();
+    std::cout << "Flags set" << std::endl;
 
-    gpu_queue.memcpy(data_cpu, data_gpu, N * sizeof(int)).wait();
-
-    int *host_data = sycl::malloc_host<int>(N, gpu_queue);
-    gpu_queue.memcpy(host_data, data_gpu, N * sizeof(int)).wait();
-
-    int *host_data2 = sycl::malloc_host<int>(N, cpu_queue);
-    gpu_queue.memcpy(host_data2, data_gpu, N * sizeof(int)).wait();
-
-
-    sycl::free(data_gpu, gpu_queue);
-    sycl::free(data_cpu, cpu_queue);
-    sycl::free(host_data, gpu_queue);
-    sycl::free(host_data2, cpu_queue);
+    sycl::free(data, gpu_queue);
 
     return 0;
 }

@@ -564,7 +564,7 @@ public:
 
     std::tuple<int *, sycl::event, int *, sycl::event, uint64_t> build_row_ids(int segment_n, int segment_size, memory_manager &gpu_allocator, memory_manager &cpu_allocator)
     {
-        int *row_id_index = gpu_allocator.alloc<int>(1, true);
+        int *row_id_index = gpu_allocator.alloc_zero<int>(1);
         bool *flags = flags_gpu + segment_n * SEGMENT_SIZE;
         uint64_t n_rows_new = count_true_flags(
             flags,
@@ -669,38 +669,44 @@ public:
                     std::cerr << "Both flags modified on GPU and CPU during compress_and_sync." << std::endl;
                     throw std::runtime_error("Both flags modified on GPU and CPU during compress_and_sync.");
                 }
+                // std::cout << "init: " << i * SEGMENT_SIZE << "-" << segment_size + i * SEGMENT_SIZE << "/" << nrows << std::endl;
                 bool *flags = flags_host + i * SEGMENT_SIZE;
-                auto e_memset = cpu_queue.memset(
-                    flags,
-                    0,
-                    segment_size * sizeof(bool)
+                // std::cout << "pre waits" << std::endl;
+                // gpu_queue.wait_and_throw();
+                // cpu_queue.wait_and_throw();
+                // std::cout << "pre memset" << std::endl;
+                auto e_memset = cpu_queue.memset(flags, 0, segment_size * sizeof(bool));
+                // std::cout << "segment size: " << segment_size << " - row ids: [";
+                // e_row_id_host.wait();
+                // e_memset.wait();
+                // for (uint64_t k = 0; k < n_rows_new; k++)
+                // {
+                //     std::cout << row_ids_host[k] << (k == n_rows_new - 1 ? "" : ", ");
+                //     flags[row_ids_host[k]] = true;
+                // }
+                // std::cout << "]" << std::endl;
+                // std::cout << "pre waits 2" << std::endl;
+                // gpu_queue.wait_and_throw();
+                // cpu_queue.wait_and_throw();
+                // std::cout << "Updating flags on CPU for segment " << i << " with " << n_rows_new << " rows." << std::endl;
+                cpu_queue.submit(
+                    [&](sycl::handler &cgh)
+                    {
+                        cgh.depends_on(e_row_id_host);
+                        cgh.depends_on(e_memset);
+                        cgh.parallel_for(
+                            n_rows_new,
+                            [=](sycl::id<1> idx)
+                            {
+                                int row_id = row_ids_host[idx[0]];
+                                flags[row_id] = true;
+                            }
+                        );
+                    }
                 );
-                std::cout << "segment size: " << segment_size << " - row ids: [";
-                e_row_id_host.wait();
-                e_memset.wait();
-                for (uint64_t k = 0; k < n_rows_new; k++)
-                {
-                    std::cout << row_ids_host[k] << (k == n_rows_new - 1 ? "" : ", ");
-                    flags[row_ids_host[k]] = true;
-                }
-                std::cout << "]" << std::endl;
-                // cpu_queue.submit(
-                //     [&](sycl::handler &cgh)
-                //     {
-                //         cgh.depends_on(e_row_id_host);
-                //         cgh.depends_on(e_memset);
-                //         cgh.parallel_for(
-                //             n_rows_new,
-                //             [=](sycl::id<1> idx)
-                //             {
-                //                 auto i = idx[0];
-                //                 int row_id = row_ids_host[i];
-                //                 flags[row_id] = true;
-                //             }
-                //         );
-                //     }
-                // );
+                // std::cout << "Flags on CPU updated for segment " << i << "." << std::endl;
                 flags_modified_gpu[i] = false;
+                // std::cout << "Flags on GPU for segment " << i << "/" << flags_modified_gpu.size() - 1 << " marked as not modified." << std::endl;
             }
         }
 
@@ -1220,8 +1226,8 @@ public:
                 #endif
             }
             uint64_t *final_result = (on_device ?
-                gpu_allocator.alloc<uint64_t>(1, true) :
-                cpu_allocator.alloc<uint64_t>(1, true)
+                gpu_allocator.alloc_zero<uint64_t>(1) :
+                cpu_allocator.alloc_zero<uint64_t>(1)
                 );
 
             agg_bundles.reserve(input_segments.size());
@@ -1355,8 +1361,8 @@ public:
                 prod_ranges *= max[i] - min[i] + 1;
             }
 
-            uint64_t *aggregate_result = allocator.alloc<uint64_t>(prod_ranges, true);
-            unsigned *temp_flags = allocator.alloc<unsigned>(prod_ranges, true);
+            uint64_t *aggregate_result = allocator.alloc_zero<uint64_t>(prod_ranges);
+            unsigned *temp_flags = allocator.alloc_zero<unsigned>(prod_ranges);
             int **results = allocator.alloc<int *>(group.size(), !on_device);
 
             for (int i = 0; i < group.size(); i++)

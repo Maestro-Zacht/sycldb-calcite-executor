@@ -29,7 +29,7 @@ std::vector<sycl::event> parse_aggregate(
 
     if (group.size() == 0)
     {
-        uint64_t *result = gpu_allocator.alloc<uint64_t>(1, true);
+        uint64_t *result = gpu_allocator.alloc_zero<uint64_t>(1);
         events.push_back(aggregate_operation(
             table_data.columns[table_data.column_indices.at(agg.operands[0])].content,
             table_data.flags, table_data.col_len, result, queue, dependencies));
