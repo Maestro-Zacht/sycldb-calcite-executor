@@ -732,8 +732,7 @@ public:
         int *row_ids_host,
         sycl::event &e_row_id_host,
         uint64_t nrows_selected,
-        memory_manager &gpu_allocator,
-        memory_manager &cpu_allocator)
+        memory_manager &gpu_allocator)
     {
         if (is_aggregate_result)
         {

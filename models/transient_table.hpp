@@ -562,16 +562,10 @@ public:
         );
     }
 
-    std::tuple<int *, sycl::event, int *, sycl::event, uint64_t> build_row_ids(int segment_n, int segment_size, memory_manager &gpu_allocator, memory_manager &cpu_allocator)
+    std::tuple<int *, sycl::event, int *, sycl::event> build_row_ids(int segment_n, int segment_size, uint64_t n_rows_new, memory_manager &gpu_allocator)
     {
         int *row_id_index = gpu_allocator.alloc_zero<int>(1);
         bool *flags = flags_gpu + segment_n * SEGMENT_SIZE;
-        uint64_t n_rows_new = count_true_flags(
-            flags,
-            segment_size,
-            gpu_queue,
-            gpu_allocator
-        );
         int *row_ids_gpu = gpu_allocator.alloc<int>(n_rows_new, true);
         sycl::event e_row_id_gpu = gpu_queue.submit(
             [&](sycl::handler &cgh)
@@ -604,13 +598,49 @@ public:
             e_row_id_gpu
         );
 
-        return { row_ids_gpu, e_row_id_gpu, row_ids_host, e_row_id_host, n_rows_new };
+        return { row_ids_gpu, e_row_id_gpu, row_ids_host, e_row_id_host };
     }
 
     // This is a sync point
     void compress_and_sync(memory_manager &gpu_allocator, memory_manager &cpu_allocator, const std::vector<Column *> &columns_to_sync)
     {
         int num_segments = nrows / SEGMENT_SIZE + (nrows % SEGMENT_SIZE > 0);
+        uint64_t *n_rows_new_array = gpu_allocator.alloc<uint64_t>(num_segments, false);
+
+        gpu_queue.wait_and_throw();
+        cpu_queue.wait_and_throw();
+
+        for (int i = 0; i < num_segments; i++)
+        {
+            bool done = false;
+            if (flags_modified_gpu[i])
+            {
+                count_true_flags(
+                    flags_gpu + i * SEGMENT_SIZE,
+                    (i == num_segments - 1) ? (nrows - i * SEGMENT_SIZE) : SEGMENT_SIZE,
+                    gpu_queue,
+                    gpu_allocator,
+                    &n_rows_new_array[i]
+                );
+                done = true;
+            }
+
+            for (const Column *col : columns_to_sync)
+            {
+                Segment &seg = const_cast<Segment &>(col->get_segments()[i]);
+                if (seg.needs_copy_on(false) && !done)
+                {
+                    count_true_flags(
+                        flags_gpu + i * SEGMENT_SIZE,
+                        (i == num_segments - 1) ? (nrows - i * SEGMENT_SIZE) : SEGMENT_SIZE,
+                        gpu_queue,
+                        gpu_allocator,
+                        &n_rows_new_array[i]
+                    );
+                    done = true;
+                }
+            }
+        }
 
         gpu_queue.wait_and_throw();
         cpu_queue.wait_and_throw();
@@ -621,18 +651,16 @@ public:
                 *row_ids_gpu = nullptr;
             sycl::event e_row_id_host,
                 e_row_id_gpu;
-            uint64_t n_rows_new = 0;
 
             uint64_t segment_size = (i == num_segments - 1) ? (nrows - i * SEGMENT_SIZE) : SEGMENT_SIZE;
 
             if (flags_modified_gpu[i])
             {
-                auto row_id_res = build_row_ids(i, segment_size, gpu_allocator, cpu_allocator);
+                auto row_id_res = build_row_ids(i, segment_size, n_rows_new_array[i], gpu_allocator);
                 row_ids_gpu = std::get<0>(row_id_res);
                 e_row_id_gpu = std::get<1>(row_id_res);
                 row_ids_host = std::get<2>(row_id_res);
                 e_row_id_host = std::get<3>(row_id_res);
-                n_rows_new = std::get<4>(row_id_res);
             }
 
             for (const Column *col : columns_to_sync)
@@ -642,12 +670,11 @@ public:
                 {
                     if (row_ids_gpu == nullptr)
                     {
-                        auto row_id_res = build_row_ids(i, segment_size, gpu_allocator, cpu_allocator);
+                        auto row_id_res = build_row_ids(i, segment_size, n_rows_new_array[i], gpu_allocator);
                         row_ids_gpu = std::get<0>(row_id_res);
                         e_row_id_gpu = std::get<1>(row_id_res);
                         row_ids_host = std::get<2>(row_id_res);
                         e_row_id_host = std::get<3>(row_id_res);
-                        n_rows_new = std::get<4>(row_id_res);
                     }
 
                     seg.compress_sync(
@@ -655,9 +682,8 @@ public:
                         e_row_id_gpu,
                         row_ids_host,
                         e_row_id_host,
-                        n_rows_new,
-                        gpu_allocator,
-                        cpu_allocator
+                        n_rows_new_array[i],
+                        gpu_allocator
                     );
                 }
             }
@@ -695,7 +721,7 @@ public:
                         cgh.depends_on(e_row_id_host);
                         cgh.depends_on(e_memset);
                         cgh.parallel_for(
-                            n_rows_new,
+                            n_rows_new_array[i],
                             [=](sycl::id<1> idx)
                             {
                                 int row_id = row_ids_host[idx[0]];

@@ -41,15 +41,15 @@ uint64_t count_true_flags(
     return result;
 }
 
-uint64_t count_true_flags(
+sycl::event count_true_flags(
     const bool *flags,
     int len,
     sycl::queue &queue,
     memory_manager &allocator,
+    uint64_t *result,
     const std::vector<sycl::event> &dependencies = {})
 {
-    uint64_t *count = allocator.alloc_zero<uint64_t>(1),
-        *result = allocator.alloc<uint64_t>(1, false);
+    uint64_t *count = allocator.alloc_zero<uint64_t>(1);
 
     auto e = queue.submit(
         [&](sycl::handler &cgh)
@@ -72,6 +72,5 @@ uint64_t count_true_flags(
             );
         }
     );
-    queue.memcpy(result, count, sizeof(uint64_t), e).wait();
-    return *result;
+    return queue.memcpy(result, count, sizeof(uint64_t), e);
 }
