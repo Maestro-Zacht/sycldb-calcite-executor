@@ -4,5 +4,5 @@
 #define PERFORMANCE_REPETITIONS 100
 #define USE_FUSION 0
 
-#define SIZE_TEMP_MEMORY_GPU (((uint64_t)1) << 33) // 8GB
-#define SIZE_TEMP_MEMORY_CPU (((uint64_t)1) << 34) // 16GB
+#define SIZE_TEMP_MEMORY_GPU (((uint64_t)20) << 30) // 20GB
+#define SIZE_TEMP_MEMORY_CPU (((uint64_t)8) << 30) // 8GB
