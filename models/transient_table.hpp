@@ -710,7 +710,7 @@ public:
             {
                 if (flags_modified_host[i])
                 {
-                    std::cerr << "Both flags modified on GPU and CPU during compress_and_sync." << std::endl;
+                    std::cerr << "Error: both flags modified on GPU and CPU during compress_and_sync." << std::endl;
                     throw std::runtime_error("Both flags modified on GPU and CPU during compress_and_sync.");
                 }
                 bool *flags = flags_host + i * SEGMENT_SIZE;
