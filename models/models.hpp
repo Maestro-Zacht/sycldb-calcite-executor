@@ -768,7 +768,12 @@ public:
 
         // e1.wait();
 
-        auto e2 = gpu_queue.memcpy(data_host_compressed, data_device_compressed, nrows_selected * sizeof(int), e1);
+        auto e2 = gpu_queue.memcpy(
+            data_host_compressed,
+            data_device_compressed,
+            nrows_selected * sizeof(int),
+            e1
+        );
 
         // e2.wait();
 

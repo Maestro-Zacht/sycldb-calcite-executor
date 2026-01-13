@@ -49,15 +49,13 @@ sycl::event count_true_flags(
     uint64_t *result,
     const std::vector<sycl::event> &dependencies = {})
 {
-    uint64_t *count = allocator.alloc_zero<uint64_t>(1);
-
-    auto e = queue.submit(
+    return queue.submit(
         [&](sycl::handler &cgh)
         {
             cgh.depends_on(dependencies);
             cgh.parallel_for(
                 sycl::range<1>(len),
-                sycl::reduction(count, sycl::plus<>()),
+                sycl::reduction(result, sycl::plus<>()),
                 [=](sycl::id<1> idx, auto &sum)
                 {
                     // sycl::atomic_ref<
@@ -72,5 +70,4 @@ sycl::event count_true_flags(
             );
         }
     );
-    return queue.memcpy(result, count, sizeof(uint64_t), e);
 }

@@ -564,9 +564,11 @@ public:
 
     std::tuple<int *, sycl::event, int *, sycl::event> build_row_ids(int segment_n, int segment_size, uint64_t n_rows_new, memory_manager &gpu_allocator)
     {
-        int *row_id_index = gpu_allocator.alloc_zero<int>(1);
         bool *flags = flags_gpu + segment_n * SEGMENT_SIZE;
-        int *row_ids_gpu = gpu_allocator.alloc<int>(n_rows_new, true);
+        int *row_id_index = gpu_allocator.alloc_zero<int>(1),
+            *row_ids_gpu = gpu_allocator.alloc<int>(n_rows_new, true),
+            *row_ids_host = gpu_allocator.alloc<int>(n_rows_new, false);
+
         sycl::event e_row_id_gpu = gpu_queue.submit(
             [&](sycl::handler &cgh)
             {
@@ -590,7 +592,6 @@ public:
                 );
             }
         );
-        int *row_ids_host = gpu_allocator.alloc<int>(n_rows_new, false);
         sycl::event e_row_id_host = gpu_queue.memcpy(
             row_ids_host,
             row_ids_gpu,
@@ -605,22 +606,33 @@ public:
     void compress_and_sync(memory_manager &gpu_allocator, memory_manager &cpu_allocator, const std::vector<Column *> &columns_to_sync)
     {
         int num_segments = nrows / SEGMENT_SIZE + (nrows % SEGMENT_SIZE > 0);
-        uint64_t *n_rows_new_array = gpu_allocator.alloc<uint64_t>(num_segments, false);
+        uint64_t *n_rows_new_array_host = gpu_allocator.alloc<uint64_t>(num_segments, false),
+            *n_rows_new_array_gpu = gpu_allocator.alloc_zero<uint64_t>(num_segments);
 
-        gpu_queue.wait_and_throw();
-        cpu_queue.wait_and_throw();
+        auto dependencies = execute_pending_kernels();
 
         for (int i = 0; i < num_segments; i++)
         {
             bool done = false;
+            bool *flags = flags_gpu + i * SEGMENT_SIZE;
+            std::vector<sycl::event> deps;
+            sycl::event e_count;
+            uint64_t segment_size = (i == num_segments - 1) ? (nrows - i * SEGMENT_SIZE) : SEGMENT_SIZE;
+
+            if (dependencies.first.size() == num_segments)
+                deps.push_back(dependencies.first[i]);
+            else
+                deps = dependencies.first;
+
             if (flags_modified_gpu[i])
             {
-                count_true_flags(
-                    flags_gpu + i * SEGMENT_SIZE,
-                    (i == num_segments - 1) ? (nrows - i * SEGMENT_SIZE) : SEGMENT_SIZE,
+                e_count = count_true_flags(
+                    flags,
+                    segment_size,
                     gpu_queue,
                     gpu_allocator,
-                    &n_rows_new_array[i]
+                    n_rows_new_array_gpu + i,
+                    deps
                 );
                 done = true;
             }
@@ -630,16 +642,25 @@ public:
                 Segment &seg = const_cast<Segment &>(col->get_segments()[i]);
                 if (seg.needs_copy_on(false) && !done)
                 {
-                    count_true_flags(
-                        flags_gpu + i * SEGMENT_SIZE,
-                        (i == num_segments - 1) ? (nrows - i * SEGMENT_SIZE) : SEGMENT_SIZE,
+                    e_count = count_true_flags(
+                        flags,
+                        segment_size,
                         gpu_queue,
                         gpu_allocator,
-                        &n_rows_new_array[i]
+                        n_rows_new_array_gpu + i,
+                        deps
                     );
                     done = true;
                 }
             }
+
+            if (done)
+                gpu_queue.memcpy(
+                    n_rows_new_array_host + i,
+                    n_rows_new_array_gpu + i,
+                    sizeof(uint64_t),
+                    e_count
+                );
         }
 
         gpu_queue.wait_and_throw();
@@ -647,16 +668,13 @@ public:
 
         for (int i = 0; i < num_segments; i++)
         {
-            int *row_ids_host = nullptr,
-                *row_ids_gpu = nullptr;
-            sycl::event e_row_id_host,
-                e_row_id_gpu;
-
+            int *row_ids_host = nullptr, *row_ids_gpu = nullptr;
+            sycl::event e_row_id_host, e_row_id_gpu;
             uint64_t segment_size = (i == num_segments - 1) ? (nrows - i * SEGMENT_SIZE) : SEGMENT_SIZE;
 
             if (flags_modified_gpu[i])
             {
-                auto row_id_res = build_row_ids(i, segment_size, n_rows_new_array[i], gpu_allocator);
+                auto row_id_res = build_row_ids(i, segment_size, n_rows_new_array_host[i], gpu_allocator);
                 row_ids_gpu = std::get<0>(row_id_res);
                 e_row_id_gpu = std::get<1>(row_id_res);
                 row_ids_host = std::get<2>(row_id_res);
@@ -670,7 +688,7 @@ public:
                 {
                     if (row_ids_gpu == nullptr)
                     {
-                        auto row_id_res = build_row_ids(i, segment_size, n_rows_new_array[i], gpu_allocator);
+                        auto row_id_res = build_row_ids(i, segment_size, n_rows_new_array_host[i], gpu_allocator);
                         row_ids_gpu = std::get<0>(row_id_res);
                         e_row_id_gpu = std::get<1>(row_id_res);
                         row_ids_host = std::get<2>(row_id_res);
@@ -682,7 +700,7 @@ public:
                         e_row_id_gpu,
                         row_ids_host,
                         e_row_id_host,
-                        n_rows_new_array[i],
+                        n_rows_new_array_host[i],
                         gpu_allocator
                     );
                 }
@@ -695,33 +713,15 @@ public:
                     std::cerr << "Both flags modified on GPU and CPU during compress_and_sync." << std::endl;
                     throw std::runtime_error("Both flags modified on GPU and CPU during compress_and_sync.");
                 }
-                // std::cout << "init: " << i * SEGMENT_SIZE << "-" << segment_size + i * SEGMENT_SIZE << "/" << nrows << std::endl;
                 bool *flags = flags_host + i * SEGMENT_SIZE;
-                // std::cout << "pre waits" << std::endl;
-                // gpu_queue.wait_and_throw();
-                // cpu_queue.wait_and_throw();
-                // std::cout << "pre memset" << std::endl;
                 auto e_memset = cpu_queue.memset(flags, 0, segment_size * sizeof(bool));
-                // std::cout << "segment size: " << segment_size << " - row ids: [";
-                // e_row_id_host.wait();
-                // e_memset.wait();
-                // for (uint64_t k = 0; k < n_rows_new; k++)
-                // {
-                //     std::cout << row_ids_host[k] << (k == n_rows_new - 1 ? "" : ", ");
-                //     flags[row_ids_host[k]] = true;
-                // }
-                // std::cout << "]" << std::endl;
-                // std::cout << "pre waits 2" << std::endl;
-                // gpu_queue.wait_and_throw();
-                // cpu_queue.wait_and_throw();
-                // std::cout << "Updating flags on CPU for segment " << i << " with " << n_rows_new << " rows." << std::endl;
                 cpu_queue.submit(
                     [&](sycl::handler &cgh)
                     {
                         cgh.depends_on(e_row_id_host);
                         cgh.depends_on(e_memset);
                         cgh.parallel_for(
-                            n_rows_new_array[i],
+                            n_rows_new_array_host[i],
                             [=](sycl::id<1> idx)
                             {
                                 int row_id = row_ids_host[idx[0]];
@@ -730,9 +730,7 @@ public:
                         );
                     }
                 );
-                // std::cout << "Flags on CPU updated for segment " << i << "." << std::endl;
                 flags_modified_gpu[i] = false;
-                // std::cout << "Flags on GPU for segment " << i << "/" << flags_modified_gpu.size() - 1 << " marked as not modified." << std::endl;
             }
         }
 
@@ -1351,13 +1349,6 @@ public:
 
             if (need_data_sync || need_flag_sync)
             {
-                // std::cout << "Executing flag/data sync kernels before aggregate.\nDeps gpu: "
-                //     << pending_kernels_dependencies_gpu.size()
-                //     << ", cpu: "
-                //     << pending_kernels_dependencies_cpu.size()
-                //     << std::endl;
-                execute_pending_kernels();
-
                 std::vector<Column *> columns_to_sync;
                 if (need_data_sync)
                 {
