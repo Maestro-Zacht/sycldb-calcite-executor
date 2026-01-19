@@ -37,6 +37,8 @@ class EndTimer1;
 class EndTimer2;
 class EndTimer3;
 
+class TestEvent;
+
 void sycl_exception_handler(sycl::exception_list exceptions)
 {
     bool error = false;
@@ -614,14 +616,14 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
     const PlanResult &result,
     const std::string &data_path,
     Table tables[MAX_NTABLES],
-    sycl::queue &gpu_queue,
     sycl::queue &cpu_queue,
+    std::vector<sycl::queue> &device_queues,
     #if USE_FUSION
-    sycl::ext::codeplay::experimental::fusion_wrapper &fw_gpu,
     sycl::ext::codeplay::experimental::fusion_wrapper &fw_cpu,
+    std::vector<sycl::ext::codeplay::experimental::fusion_wrapper> &fw_devices,
     #endif
-    memory_manager &gpu_allocator,
     memory_manager &cpu_allocator,
+    std::vector<memory_manager> &device_allocators,
     std::ostream &perf_out = std::cout)
 {
 
@@ -662,14 +664,14 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
 
         TransientTable &t = transient_tables.emplace_back(
             table_ptr,
-            gpu_queue,
             cpu_queue,
+            device_queues,
             #if USE_FUSION
-            fw_gpu,
             fw_cpu,
+            fw_devices,
             #endif
-            gpu_allocator,
-            cpu_allocator
+            cpu_allocator,
+            device_allocators
         );
 
         if (exec_info.group_by_columns.find(rel.tables[1]) != exec_info.group_by_columns.end())
@@ -685,11 +687,13 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
     std::cout << std::endl;
     #endif
 
-    gpu_queue.wait();
     cpu_queue.wait();
+    for (sycl::queue &q : device_queues)
+        q.wait();
 
-    gpu_queue.single_task<InitTimer2>([=]() {}).wait();
-    cpu_queue.single_task<InitTimer3>([=]() {}).wait();
+    cpu_queue.single_task<InitTimer2>([=]() {}).wait();
+    for (sycl::queue &q : device_queues)
+        q.single_task<InitTimer3>([=]() {}).wait();
 
     auto start = std::chrono::high_resolution_clock::now();
 
@@ -710,8 +714,8 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
             transient_tables[prev_table_idx].apply_filter(
                 rel.condition,
                 "",
-                gpu_allocator,
-                cpu_allocator
+                cpu_allocator,
+                device_allocators
             );
             output_table[id] = prev_table_idx;
             #if not PERFORMANCE_MEASUREMENT_ACTIVE
@@ -730,8 +734,8 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
             int prev_table_idx = output_table[id - 1];
             transient_tables[prev_table_idx].apply_project(
                 rel.exprs,
-                gpu_allocator,
-                cpu_allocator
+                cpu_allocator,
+                device_allocators
             );
             output_table[id] = prev_table_idx;
             #if not PERFORMANCE_MEASUREMENT_ACTIVE
@@ -751,8 +755,8 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
             transient_tables[prev_table_idx].apply_aggregate(
                 rel.aggs[0],
                 rel.group,
-                gpu_allocator,
-                cpu_allocator
+                cpu_allocator,
+                device_allocators
             );
             output_table[id] = prev_table_idx;
             #if not PERFORMANCE_MEASUREMENT_ACTIVE
@@ -775,8 +779,8 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
             transient_tables[left_table_idx].apply_join(
                 transient_tables[right_table_idx],
                 rel,
-                gpu_allocator,
-                cpu_allocator
+                cpu_allocator,
+                device_allocators
             );
             output_table[id] = left_table_idx;
 
@@ -804,7 +808,7 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
         //     TransientTable &table = transient_tables[output_table[id]];
         //     uint64_t
         //         // rows_selected_gpu = table.count_flags_true(true, gpu_allocator, cpu_allocator),
-        //         rows_selected_cpu = table.count_flags_true(false, gpu_allocator, cpu_allocator);
+        //         rows_selected_cpu = table.count_flags_true(false, -1);
         //     std::cout << "== rows selected after operation " << id
         //         // << "\n==== GPU: "
         //         // << rows_selected_gpu
@@ -829,8 +833,9 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
 
     // auto pre_wait = std::chrono::high_resolution_clock::now();
 
-    gpu_queue.wait();
     cpu_queue.wait();
+    for (sycl::queue &q : device_queues)
+        q.wait();
 
     auto end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double, std::milli> duration = end - start;
@@ -838,8 +843,9 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
 
     // std::cout << "All operations completed in " << duration.count() << " ms" << std::endl;
 
-    gpu_queue.single_task<EndTimer2>([=]() {}).wait();
-    cpu_queue.single_task<EndTimer3>([=]() {}).wait();
+    cpu_queue.single_task<EndTimer2>([=]() {}).wait();
+    for (sycl::queue &q : device_queues)
+        q.single_task<EndTimer3>([=]() {}).wait();
 
     // std::cout << "end" << std::endl;
 
@@ -848,17 +854,14 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
     #else
     TransientTable &final_table = transient_tables[output_table[result.rels.size() - 1]];
 
-    final_table.update_flags(false, gpu_allocator, cpu_allocator);
-    auto events = final_table.execute_pending_kernels();
-    sycl::event::wait(events.first);
-    sycl::event::wait(events.second);
-    gpu_queue.wait_and_throw();
+    final_table.compress_and_sync(cpu_allocator, device_allocators[0], 0);
+    final_table.execute_pending_kernels();
     cpu_queue.wait_and_throw();
+    for (sycl::queue &q : device_queues)
+        q.wait_and_throw();
     final_table.assert_flags_to_cpu();
     // std::cout << "Final result:\n" << final_table << std::endl;
     save_result(final_table, data_path);
-    gpu_queue.wait_and_throw();
-    cpu_queue.wait_and_throw();
     #endif
 
     return duration;
@@ -871,22 +874,51 @@ int data_driven_operator_replacement(int argc, char **argv)
     std::shared_ptr<TProtocol> protocol(new TBinaryProtocol(transport));
     CalciteServerClient client(protocol);
     std::string sql;
-    sycl::queue gpu_queue{
-        sycl::gpu_selector_v,
-        // sycl_exception_handler,
-        #if USE_FUSION
-        sycl::ext::codeplay::experimental::property::queue::enable_fusion {}
-        #endif
-    }, cpu_queue{
+    sycl::queue cpu_queue{
         sycl::cpu_selector_v,
-        // sycl_exception_handler,
         #if USE_FUSION
         sycl::ext::codeplay::experimental::property::queue::enable_fusion {}
         #endif
     };
+    std::vector<sycl::queue> device_queues;
+    std::vector<sycl::device> gpus = sycl::device::get_devices(sycl::info::device_type::gpu);
+    device_queues.reserve(gpus.size());
+
+    std::cout << "Found " << gpus.size() << " GPU(s):" << std::endl;
+    std::cout << "---------------------------------" << std::endl;
+    for (const sycl::device &gpu : gpus)
+    {
+        auto name = gpu.get_info<sycl::info::device::name>();
+        auto vendor = gpu.get_info<sycl::info::device::vendor>();
+        auto memsize = gpu.get_info<sycl::info::device::global_mem_size>();
+        auto platform = gpu.get_info<sycl::info::device::platform>().get_info<sycl::info::platform::name>();
+        auto max_compute_units = gpu.get_info<sycl::info::device::max_compute_units>();
+        auto backend = gpu.get_backend();
+
+        std::cout << "Name:    " << name
+            << "\nVendor:  " << vendor
+            << "\nMemSize (MB): " << (memsize >> 20)
+            << "\nMax Compute Units: " << max_compute_units
+            << "\nPlatform: " << platform
+            << "\nBackend: " << backend
+            << "\n---------------------------------" << std::endl;
+
+        device_queues.emplace_back(
+            #if USE_FUSION
+            gpu,
+            sycl::ext::codeplay::experimental::property::queue::enable_fusion {}
+        #else
+            gpu
+            #endif
+        );
+    }
 
     #if USE_FUSION
-    sycl::ext::codeplay::experimental::fusion_wrapper fw_gpu{ gpu_queue }, fw_cpu{ cpu_queue };
+    sycl::ext::codeplay::experimental::fusion_wrapper fw_cpu{ cpu_queue };
+    std::vector<sycl::ext::codeplay::experimental::fusion_wrapper> fw_devices;
+    fw_devices.reserve(gpus.size());
+    for (sycl::queue &q : device_queues)
+        fw_devices.emplace_back(q);
     #endif
 
     if (argc == 2)
@@ -913,17 +945,19 @@ int data_driven_operator_replacement(int argc, char **argv)
     }
 
     #if not PERFORMANCE_MEASUREMENT_ACTIVE
-    std::cout << "Running on GPU: " << gpu_queue.get_device().get_info<sycl::info::device::name>()
-        << "\nRunning on CPU: " << cpu_queue.get_device().get_info<sycl::info::device::name>()
+    std::cout << "Running on CPU: " << cpu_queue.get_device().get_info<sycl::info::device::name>()
+        << std::endl;
+    for (sycl::queue &q : device_queues)
+        std::cout << "Running on GPU: " << q.get_device().get_info<sycl::info::device::name>()
         << std::endl;
     #endif
 
     Table tables[MAX_NTABLES] = {
-        Table("part", gpu_queue, cpu_queue),
-        Table("supplier", gpu_queue, cpu_queue),
-        Table("customer", gpu_queue, cpu_queue),
-        Table("ddate", gpu_queue, cpu_queue),
-        Table("lineorder", gpu_queue, cpu_queue),
+        Table("part",  cpu_queue, device_queues),
+        Table("supplier", cpu_queue, device_queues),
+        Table("customer", cpu_queue, device_queues),
+        Table("ddate", cpu_queue, device_queues),
+        Table("lineorder", cpu_queue, device_queues),
     };
 
     for (const Table &table : tables)
@@ -931,57 +965,63 @@ int data_driven_operator_replacement(int argc, char **argv)
         std::cout << table.get_name() << " num segments: " << table.num_segments() << std::endl;
     }
 
-    tables[0].move_column_to_device(0);
-    tables[0].move_column_to_device(2);
-    tables[0].move_column_to_device(3);
-    tables[0].move_column_to_device(4);
+    tables[0].move_column_to_device(0, 0);
+    tables[0].move_column_to_device(2, 0);
+    tables[0].move_column_to_device(3, 0);
+    tables[0].move_column_to_device(4, 0);
 
-    tables[1].move_column_to_device(0);
-    tables[1].move_column_to_device(3);
-    tables[1].move_column_to_device(4);
-    tables[1].move_column_to_device(5);
+    tables[1].move_column_to_device(0, 0);
+    tables[1].move_column_to_device(3, 0);
+    tables[1].move_column_to_device(4, 0);
+    tables[1].move_column_to_device(5, 0);
 
-    tables[2].move_column_to_device(0);
-    tables[2].move_column_to_device(3);
-    tables[2].move_column_to_device(4);
-    tables[2].move_column_to_device(5);
+    tables[2].move_column_to_device(0, 0);
+    tables[2].move_column_to_device(3, 0);
+    tables[2].move_column_to_device(4, 0);
+    tables[2].move_column_to_device(5, 0);
 
-    tables[3].move_column_to_device(0);
-    tables[3].move_column_to_device(4);
-    tables[3].move_column_to_device(5);
+    tables[3].move_column_to_device(0, 0);
+    tables[3].move_column_to_device(4, 0);
+    tables[3].move_column_to_device(5, 0);
 
-    tables[4].move_column_to_device(2);
-    tables[4].move_column_to_device(3);
-    tables[4].move_column_to_device(4);
-    tables[4].move_column_to_device(5);
+    tables[4].move_column_to_device(2, 0);
+    tables[4].move_column_to_device(3, 0);
+    tables[4].move_column_to_device(4, 0);
+    tables[4].move_column_to_device(5, 0);
 
-    // tables[4].move_column_to_device(8);
-    // tables[4].move_column_to_device(9);
-    // tables[4].move_column_to_device(11);
-    // tables[4].move_column_to_device(12);
-    // tables[4].move_column_to_device(13);
-    // tables[4].move_column_to_device(14);
+    // tables[4].move_column_to_device(8, 0);
+    // tables[4].move_column_to_device(9, 0);
+    // tables[4].move_column_to_device(11, 0);
+    // tables[4].move_column_to_device(12, 0);
+    // tables[4].move_column_to_device(13, 0);
+    // tables[4].move_column_to_device(14, 0);
 
     // for (int i = 0; i < MAX_NTABLES; i++)
-    //     tables[i].move_all_to_device();
+    //     tables[i].move_all_to_device(0);
 
-    gpu_queue.wait_and_throw();
+    for (auto &gpu_queue : device_queues)
+        gpu_queue.wait_and_throw();
 
     // std::cout << "All tables moved to device." << std::endl;
 
-    uint64_t total_mem = 0, total_gpu_mem = 0;
+    uint64_t total_mem = 0;
+    std::vector<uint64_t> total_gpu_mem_per_device(device_queues.size(), 0);
     for (int i = 0; i < MAX_NTABLES; i++)
     {
-        total_mem += tables[i].get_data_size(false);
-        total_gpu_mem += tables[i].get_data_size(true);
+        total_mem += tables[i].get_data_size(false, -1);
+        for (int d = 0; d < device_queues.size(); d++)
+            total_gpu_mem_per_device[d] += tables[i].get_data_size(true, d);
     }
-    std::cout << "Total memory used by tables: " << (total_mem >> 20)
-        << " MB (GPU: " << (total_gpu_mem >> 20) << " MB)" << std::endl;
+    std::cout << "Total memory used by tables: " << (total_mem >> 20) << " MB (CPU)" << std::endl;
+    for (int d = 0; d < device_queues.size(); d++)
+        std::cout << "GPU " << d << ": " << (total_gpu_mem_per_device[d] >> 20) << " MB" << std::endl;
 
-
-    memory_manager gpu_allocator(gpu_queue, SIZE_TEMP_MEMORY_GPU);
     memory_manager cpu_allocator(cpu_queue, SIZE_TEMP_MEMORY_CPU);
+    std::vector<memory_manager> device_allocators;
 
+    device_allocators.reserve(device_queues.size());
+    for (sycl::queue &gpu_queue : device_queues)
+        device_allocators.emplace_back(gpu_queue, SIZE_TEMP_MEMORY_GPU);
     try
     {
         // std::cout << "SQL Query: " << sql << std::endl;
@@ -1008,27 +1048,30 @@ int data_driven_operator_replacement(int argc, char **argv)
                 result,
                 argv[1],
                 tables,
-                gpu_queue,
                 cpu_queue,
+                device_queues,
                 #if USE_FUSION
-                fw_gpu,
                 fw_cpu,
+                fw_devices,
                 #endif
-                gpu_allocator,
                 cpu_allocator,
+                device_allocators,
                 perf_file
             );
             auto end = std::chrono::high_resolution_clock::now();
             std::chrono::duration<double, std::milli> total_time = end - start;
 
-            std::cout << "GPU: ";
-            gpu_allocator.reset();
-
             std::cout << "CPU: ";
             cpu_allocator.reset();
+            for (int d = 0; d < device_allocators.size(); d++)
+            {
+                std::cout << "GPU" << d << ": ";
+                device_allocators[d].reset();
+            }
 
-            gpu_queue.wait_and_throw();
             cpu_queue.wait_and_throw();
+            for (sycl::queue &q : device_queues)
+                q.wait_and_throw();
 
             end = std::chrono::high_resolution_clock::now();
             std::chrono::duration<double, std::milli> after_reset = end - start;
@@ -1047,14 +1090,14 @@ int data_driven_operator_replacement(int argc, char **argv)
             result,
             argv[1],
             tables,
-            gpu_queue,
             cpu_queue,
+            device_queues,
             #if USE_FUSION
-            fw_gpu,
             fw_cpu,
+            fw_devices,
             #endif
-            gpu_allocator,
-            cpu_allocator
+            cpu_allocator,
+            device_allocators
         );
         std::cout << "DDOR execution completed in " << time.count() << " ms." << std::endl;
 
@@ -1081,8 +1124,9 @@ int data_driven_operator_replacement(int argc, char **argv)
     std::cout << "Finished execution." << std::endl;
     #endif
 
-    gpu_queue.wait_and_throw();
     cpu_queue.wait_and_throw();
+    for (sycl::queue &q : device_queues)
+        q.wait_and_throw();
 
     #if not PERFORMANCE_MEASUREMENT_ACTIVE
     std::cout << "Finished waiting" << std::endl;
@@ -1093,36 +1137,92 @@ int data_driven_operator_replacement(int argc, char **argv)
 
 int test()
 {
-    sycl::queue gpu_queue{
-        sycl::gpu_selector_v,
-        #if USE_FUSION
-        sycl::ext::codeplay::experimental::property::queue::enable_fusion {}
-        #endif
-    }, cpu_queue{
-        sycl::cpu_selector_v,
-        #if USE_FUSION
-        sycl::ext::codeplay::experimental::property::queue::enable_fusion {}
-        #endif
-    };
+    std::vector<sycl::device> devices = sycl::device::get_devices();
+    std::vector<sycl::queue> queues;
+    queues.reserve(devices.size());
 
-    uint64_t N = ((uint64_t)1 << 30) + 68476485,
-        step = ((uint64_t)1 << 22),
-        num_segments = N / step + (N % step > 0);
+    std::cout << "Found " << devices.size() << " device(s):" << std::endl;
+    std::cout << "---------------------------------" << std::endl;
 
-    bool *data = sycl::malloc_device<bool>(N, gpu_queue);
-    gpu_queue.fill<bool>(data, true, N).wait();
-
-    for (int i = 0; i < num_segments; i++)
+    for (const auto &device : devices)
     {
-        std::cout << "Setting segment " << i + 1 << "/" << num_segments << std::endl;
-        uint64_t segment_size = (i == num_segments - 1) ? (N - i * step) : step;
-        bool *flags = data + i * step;
-        gpu_queue.fill<bool>(flags, false, segment_size).wait();
+        auto name = device.get_info<sycl::info::device::name>();
+        auto vendor = device.get_info<sycl::info::device::vendor>();
+        auto memsize = device.get_info<sycl::info::device::global_mem_size>();
+        auto platform = device.get_info<sycl::info::device::platform>().get_info<sycl::info::platform::name>();
+        auto max_compute_units = device.get_info<sycl::info::device::max_compute_units>();
+        auto backend = device.get_backend();
+
+        std::cout << "Name:    " << name << std::endl;
+        std::cout << "Vendor:  " << vendor << std::endl;
+        std::cout << "MemSize (GB): " << (memsize >> 30) << std::endl;
+        std::cout << "Max Compute Units: " << max_compute_units << std::endl;
+        std::cout << "Platform: " << platform << std::endl;
+        std::cout << "Backend: " << backend << std::endl;
+        std::cout << "---------------------------------" << std::endl;
     }
 
-    std::cout << "Flags set" << std::endl;
+    if (devices.empty())
+    {
+        std::cout << "No devices found" << std::endl;
+    }
+    else
+    {
+        for (const auto &device : devices)
+        {
+            queues.emplace_back(
+                #if USE_FUSION
+                device,
+                sycl::ext::codeplay::experimental::property::queue::enable_fusion {}
+            #else
+                device
+                #endif
+            );
+        }
 
-    sycl::free(data, gpu_queue);
+        std::cout << "Successfully created " << queues.size() << " queue(s) for GPU(s)." << std::endl;
+
+        for (sycl::queue &queue : queues)
+        {
+            #if USE_FUSION
+            sycl::ext::codeplay::experimental::fusion_wrapper fw{ queue };
+            #endif
+            int *data = sycl::malloc_device<int>(1024, queue);
+
+            #if USE_FUSION
+            fw.start_fusion();
+            #endif
+
+            auto e1 = queue.parallel_for(
+                sycl::range<1>(1024),
+                [=](sycl::id<1> idx)
+                {
+                    data[idx] = idx[0];
+                }
+            );
+
+            auto e2 = queue.submit(
+                [=](sycl::handler &cgh)
+                {
+                    cgh.depends_on(e1);
+                    cgh.parallel_for(
+                        sycl::range<1>(1024),
+                        [=](sycl::id<1> idx)
+                        {
+                            data[idx] *= 2;
+                        }
+                    );
+                }
+            );
+
+            #if USE_FUSION
+            fw.complete_fusion(sycl::ext::codeplay::experimental::property::no_barriers {});
+            #endif
+        }
+
+        for (sycl::queue &queue : queues)
+            queue.wait_and_throw();
+    }
 
     return 0;
 }

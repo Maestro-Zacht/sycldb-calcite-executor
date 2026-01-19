@@ -103,42 +103,6 @@ public:
     void operator()() const {}
 };
 
-class CopyKernel : public KernelDefinition
-{
-protected:
-    void *src, *dst;
-    int size;
-public:
-    CopyKernel(void *src, void *dst, int len, int size)
-        : KernelDefinition(len), src(src), dst(dst), size(size)
-    {}
-
-    void *get_src() const { return src; }
-    void *get_dst() const { return dst; }
-    uint64_t get_size() const { return size; }
-
-    void operator()() const {}
-};
-
-class SyncFlagsKernel : public CopyKernel
-{
-private:
-    bool *tmp_flags;
-public:
-    SyncFlagsKernel(bool *src, bool *dst, bool *tmp, int len)
-        : CopyKernel(src, dst, len, sizeof(bool)), tmp_flags(tmp)
-    {}
-
-    bool *get_tmp() const { return tmp_flags; }
-    bool *get_src() const { return static_cast<bool *>(src); }
-    bool *get_dst() const { return static_cast<bool *>(dst); }
-
-    void operator()(sycl::id<1> idx) const
-    {
-        get_dst()[idx] = tmp_flags[idx] && get_dst()[idx];
-    }
-};
-
 class LogicalKernel : public KernelDefinition
 {
 private:

@@ -24,8 +24,6 @@ enum class KernelType : uint8_t
     FullJoinKernel,
     AggregateOperationKernel,
     GroupByAggregateKernel,
-    SyncFlagsKernel,
-    CopyKernel,
 };
 
 class KernelData
@@ -39,20 +37,12 @@ public:
     {}
 
     std::vector<sycl::event> execute(
-        sycl::queue &gpu_queue,
-        sycl::queue &cpu_queue,
-        const std::vector<sycl::event> &gpu_dependencies,
-        const std::vector<sycl::event> &cpu_dependencies,
-        bool on_device
+        sycl::queue &queue,
+        const std::vector<sycl::event> &dependencies
     ) const
     {
-        sycl::queue &queue = on_device ? gpu_queue : cpu_queue;
-        const std::vector<sycl::event> &dependencies = on_device ? gpu_dependencies : cpu_dependencies;
-
         // std::cout << "  - Executing kernel of type "
         //     << static_cast<int>(kernel_type)
-        //     << " on "
-        //     << (on_device ? "GPU" : "CPU")
         //     << std::endl;
 
         switch (kernel_type)
@@ -282,58 +272,6 @@ public:
             );
             return { e };
         }
-        case KernelType::SyncFlagsKernel:
-        {
-            SyncFlagsKernel *kernel = static_cast<SyncFlagsKernel *>(kernel_def.get());
-
-            bool *src = kernel->get_src();
-            bool *tmp = kernel->get_tmp();
-            int len = kernel->get_col_len();
-
-            auto deps = on_device ? cpu_dependencies : gpu_dependencies;
-
-            sycl::event e;
-            if (!deps.empty())
-                e = gpu_queue.memcpy(
-                    tmp, src, len * sizeof(bool),
-                    deps
-                );
-            else
-                e = gpu_queue.memcpy(tmp, src, len * sizeof(bool));
-
-            e = queue.submit(
-                [&](sycl::handler &cgh)
-                {
-                    if (!dependencies.empty())
-                        cgh.depends_on(dependencies);
-                    cgh.depends_on(e);
-                    cgh.parallel_for(len, *kernel);
-                }
-            );
-            return { e };
-        }
-        case KernelType::CopyKernel:
-        {
-            CopyKernel *kernel = static_cast<CopyKernel *>(kernel_def.get());
-
-            void *src = kernel->get_src();
-            void *dst = kernel->get_dst();
-            int len = kernel->get_col_len();
-            int size = kernel->get_size();
-
-            sycl::event e;
-            std::vector<sycl::event> deps;
-            deps.reserve(cpu_dependencies.size() + gpu_dependencies.size());
-            deps.insert(deps.end(), cpu_dependencies.begin(), cpu_dependencies.end());
-            deps.insert(deps.end(), gpu_dependencies.begin(), gpu_dependencies.end());
-
-            if (!deps.empty())
-                e = gpu_queue.memcpy(dst, src, len * size, deps);
-            else
-                e = gpu_queue.memcpy(dst, src, len * size);
-
-            return { e };
-        }
         default:
             std::cerr << "Unknown kernel type in KernelData::execute()" << std::endl;
             throw std::invalid_argument("Unknown kernel type");
@@ -346,14 +284,20 @@ class KernelBundle
 private:
     std::vector<KernelData> kernels;
     bool on_device;
+    int device_index;
 public:
-    KernelBundle(bool on_device)
-        : on_device(on_device)
+    KernelBundle(bool on_device, int device_index)
+        : on_device(on_device), device_index(device_index)
     {}
 
     bool is_on_device() const
     {
         return on_device;
+    }
+
+    int get_device_index() const
+    {
+        return device_index;
     }
 
     void add_kernel(KernelData kernel)
@@ -362,22 +306,19 @@ public:
     }
 
     std::vector<sycl::event> execute(
-        sycl::queue &gpu_queue,
         sycl::queue &cpu_queue,
-        const std::vector<sycl::event> &gpu_dependencies,
-        const std::vector<sycl::event> &cpu_dependencies
+        std::vector<sycl::queue> &device_queues,
+        const std::vector<sycl::event> &cpu_dependencies,
+        const std::vector<std::vector<sycl::event>> &device_dependencies
     ) const
     {
-        std::vector<sycl::event> deps = on_device ? gpu_dependencies : cpu_dependencies;
+        std::vector<sycl::event> deps = on_device ? device_dependencies[device_index] : cpu_dependencies;
 
         for (const KernelData &kernel : kernels)
         {
             deps = kernel.execute(
-                gpu_queue,
-                cpu_queue,
-                on_device ? deps : gpu_dependencies,
-                on_device ? cpu_dependencies : deps,
-                on_device
+                on_device ? device_queues[device_index] : cpu_queue,
+                deps
             );
             // sycl::event::wait(deps);
             // std::cout << "    - Kernel executed" << std::endl;
