@@ -966,27 +966,27 @@ int data_driven_operator_replacement(int argc, char **argv)
         std::cout << table.get_name() << " num segments: " << table.num_segments() << std::endl;
     }
 
-    tables[0].move_column_to_device(0, 0);
-    tables[0].move_column_to_device(2, 0);
-    tables[0].move_column_to_device(3, 0);
-    tables[0].move_column_to_device(4, 0);
+    tables[0].move_column_to_device(0, 1);
+    tables[0].move_column_to_device(2, 1);
+    tables[0].move_column_to_device(3, 1);
+    tables[0].move_column_to_device(4, 1);
 
     tables[1].move_column_to_device(0, 0);
     tables[1].move_column_to_device(3, 0);
     tables[1].move_column_to_device(4, 0);
     tables[1].move_column_to_device(5, 0);
 
-    tables[2].move_column_to_device(0, 0);
-    tables[2].move_column_to_device(3, 0);
-    tables[2].move_column_to_device(4, 0);
-    tables[2].move_column_to_device(5, 0);
+    tables[2].move_column_to_device(0, 1);
+    tables[2].move_column_to_device(3, 1);
+    tables[2].move_column_to_device(4, 1);
+    tables[2].move_column_to_device(5, 1);
 
     tables[3].move_column_to_device(0, 0);
     tables[3].move_column_to_device(4, 0);
     tables[3].move_column_to_device(5, 0);
 
-    tables[4].move_column_to_device(2, 0);
-    tables[4].move_column_to_device(3, 0);
+    tables[4].move_column_to_device(2, 1);
+    tables[4].move_column_to_device(3, 1);
     tables[4].move_column_to_device(4, 0);
     tables[4].move_column_to_device(5, 0);
 
@@ -1032,10 +1032,10 @@ int data_driven_operator_replacement(int argc, char **argv)
         #if PERFORMANCE_MEASUREMENT_ACTIVE
         std::string sql_filename = argv[1];
         std::string query_name = sql_filename.substr(sql_filename.find_last_of("/") + 1, 3);
-        std::ofstream perf_file(query_name + "-performance-hybrid-cxl-s160.log", std::ios::out | std::ios::trunc);
+        std::ofstream perf_file(query_name + "-performance-hybrid-multigpu-s40.log", std::ios::out | std::ios::trunc);
         if (!perf_file.is_open())
         {
-            std::cerr << "Could not open performance log file: " << query_name << "-performance-hybrid-cxl-s160.log" << std::endl;
+            std::cerr << "Could not open performance log file: " << query_name << "-performance-hybrid-multigpu-s40.log" << std::endl;
             return 1;
         }
 

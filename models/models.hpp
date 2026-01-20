@@ -10,11 +10,9 @@
 #include "../kernels/projection.hpp"
 #include "../kernels/types.hpp"
 #include "../kernels/join.hpp"
-#include "../operations/load.hpp"
+#include "../common.hpp"
 
 #include "execution.hpp"
-
-#define SEGMENT_SIZE (((uint64_t)1) << 25)
 
 
 class Segment
