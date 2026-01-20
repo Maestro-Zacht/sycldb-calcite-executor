@@ -2,6 +2,10 @@
 
 #include <sycl/sycl.hpp>
 
+#include <oneapi/dpl/algorithm>
+#include <oneapi/dpl/execution>
+#include <oneapi/dpl/iterator>
+
 #include "../common.hpp"
 
 #include "models.hpp"
@@ -21,7 +25,7 @@ private:
     sycl::queue &cpu_queue;
     std::vector<sycl::queue> &device_queues;
     #if USE_FUSION
-    sycl::ext::codeplay::experimental::fusion_wrapper &fw_cpu;
+    // sycl::ext::codeplay::experimental::fusion_wrapper &fw_cpu;
     std::vector<sycl::ext::codeplay::experimental::fusion_wrapper> &fw_devices;
     #endif
     std::vector<Column *> current_columns;
@@ -48,7 +52,7 @@ public:
         cpu_queue(cpu_queue),
         device_queues(device_queues),
         #if USE_FUSION
-        fw_cpu(fw_cpu),
+        // fw_cpu(fw_cpu),
         fw_devices(fw_devices),
         #endif
         nrows(base_table->get_nrows()),
@@ -322,145 +326,89 @@ public:
         );
     }
 
-    std::tuple<int *, sycl::event, int *, sycl::event> build_row_ids(int segment_n, int segment_size, uint64_t n_rows_new, memory_manager &gpu_allocator, int device_index)
+    // This function is a sync point due to oneDPL algorithms and needs dependencies to be waited manually before calling it
+    std::tuple<int *, uint64_t> build_row_ids(int segment_n, int segment_size, memory_manager &gpu_allocator, int device_index)
     {
         bool *flags = flags_devices[device_index] + segment_n * SEGMENT_SIZE;
-        int *row_id_index = gpu_allocator.alloc_zero<int>(1),
-            *row_ids_gpu = gpu_allocator.alloc<int>(n_rows_new, true),
-            *row_ids_host = gpu_allocator.alloc<int>(n_rows_new, false);
+        int *row_ids_gpu = gpu_allocator.alloc<int>(segment_size, true);
 
-        sycl::event e_row_id_gpu = device_queues[device_index].submit(
-            [&](sycl::handler &cgh)
+        auto policy = oneapi::dpl::execution::make_device_policy(device_queues[device_index]);
+        auto start_index = oneapi::dpl::counting_iterator<int>(0);
+        auto end_index = oneapi::dpl::counting_iterator<int>(segment_size);
+
+        auto end_ptr = oneapi::dpl::copy_if(
+            policy,
+            start_index,
+            end_index,
+            row_ids_gpu,
+            [=](int i)
             {
-                cgh.parallel_for(
-                    segment_size,
-                    [=](sycl::id<1> idx)
-                    {
-                        auto id = idx[0];
-                        if (flags[id])
-                        {
-                            sycl::atomic_ref<
-                                int,
-                                sycl::memory_order::relaxed,
-                                sycl::memory_scope::device,
-                                sycl::access::address_space::global_space
-                            > row_idx_atomic(*row_id_index);
-                            int pos = row_idx_atomic.fetch_add(1);
-                            row_ids_gpu[pos] = id;
-                        }
-                    }
-                );
+                return flags[i];
             }
         );
-        sycl::event e_row_id_host = device_queues[device_index].memcpy(
-            row_ids_host,
-            row_ids_gpu,
-            n_rows_new * sizeof(int),
-            e_row_id_gpu
-        );
 
-        return { row_ids_gpu, e_row_id_gpu, row_ids_host, e_row_id_host };
+        uint64_t n_selected = end_ptr - row_ids_gpu;
+
+        return { row_ids_gpu, n_selected };
     }
 
     // This is a sync point
-    void compress_and_sync(memory_manager &cpu_allocator, memory_manager &device_allocator, int device_index, const std::vector<Column *> &columns_to_sync = {})
+    void compress_and_sync(memory_manager &cpu_allocator, memory_manager &device_allocator, bool rm, int device_index, const std::vector<Column *> &columns_to_sync = {})
     {
-        int num_segments = nrows / SEGMENT_SIZE + (nrows % SEGMENT_SIZE > 0);
-        uint64_t *n_rows_new_array_host = device_allocator.alloc<uint64_t>(num_segments, false),
-            *n_rows_new_array_gpu = device_allocator.alloc_zero<uint64_t>(num_segments);
-
-        auto dependencies = execute_pending_kernels();
-
-        for (int i = 0; i < num_segments; i++)
+        if (device_index < 0 || device_index >= device_queues.size())
         {
-            bool done = false;
-            bool *flags = flags_devices[device_index] + i * SEGMENT_SIZE;
-            std::vector<sycl::event> deps;
-            sycl::event e_count;
-            uint64_t segment_size = (i == num_segments - 1) ? (nrows - i * SEGMENT_SIZE) : SEGMENT_SIZE;
-
-            if (dependencies.first.size() == num_segments)
-                deps.push_back(dependencies.first[i]);
-            else
-                deps = dependencies.first;
-
-            if (flags_modified_devices[device_index][i])
-            {
-                e_count = count_true_flags(
-                    flags,
-                    segment_size,
-                    device_queues[device_index],
-                    device_allocator,
-                    n_rows_new_array_gpu + i,
-                    deps
-                );
-                done = true;
-            }
-
-            for (const Column *col : columns_to_sync)
-            {
-                Segment &seg = const_cast<Segment &>(col->get_segments()[i]);
-                if (seg.needs_copy_on(false, -1) && !done)
-                {
-                    e_count = count_true_flags(
-                        flags,
-                        segment_size,
-                        device_queues[device_index],
-                        device_allocator,
-                        n_rows_new_array_gpu + i,
-                        deps
-                    );
-                    done = true;
-                }
-            }
-
-            if (done)
-                device_queues[device_index].memcpy(
-                    n_rows_new_array_host + i,
-                    n_rows_new_array_gpu + i,
-                    sizeof(uint64_t),
-                    e_count
-                );
+            std::cerr << "compress_and_sync: invalid device index " << device_index << std::endl;
+            throw std::runtime_error("compress_and_sync: invalid device index.");
         }
 
-        device_queues[device_index].wait_and_throw();
-        cpu_queue.wait_and_throw();
+        int num_segments = nrows / SEGMENT_SIZE + (nrows % SEGMENT_SIZE > 0);
+        std::vector<uint64_t> n_rows_new(num_segments);
+        auto dependencies = execute_pending_kernels();
+
+        device_queues[device_index].wait();
 
         for (int i = 0; i < num_segments; i++)
         {
-            int *row_ids_host = nullptr, *row_ids_gpu = nullptr;
-            sycl::event e_row_id_host, e_row_id_gpu;
+            int *row_ids_gpu = nullptr, *row_ids_host = nullptr;
             uint64_t segment_size = (i == num_segments - 1) ? (nrows - i * SEGMENT_SIZE) : SEGMENT_SIZE;
+            sycl::event e_row_ids_host;
 
             if (flags_modified_devices[device_index][i])
             {
-                auto row_id_res = build_row_ids(i, segment_size, n_rows_new_array_host[i], device_allocator, device_index);
+                auto row_id_res = build_row_ids(i, segment_size, device_allocator, device_index);
                 row_ids_gpu = std::get<0>(row_id_res);
-                e_row_id_gpu = std::get<1>(row_id_res);
-                row_ids_host = std::get<2>(row_id_res);
-                e_row_id_host = std::get<3>(row_id_res);
+                n_rows_new[i] = std::get<1>(row_id_res);
+                row_ids_host = device_allocator.alloc<int>(n_rows_new[i], false);
+                e_row_ids_host = device_queues[device_index].memcpy(
+                    row_ids_host,
+                    row_ids_gpu,
+                    n_rows_new[i] * sizeof(int)
+                );
             }
 
             for (const Column *col : columns_to_sync)
             {
                 Segment &seg = const_cast<Segment &>(col->get_segments()[i]);
-                if (seg.needs_copy_on(false, -1))
+                if (seg.is_on_device(device_index) && seg.needs_copy_on(false, -1))
                 {
                     if (row_ids_gpu == nullptr)
                     {
-                        auto row_id_res = build_row_ids(i, segment_size, n_rows_new_array_host[i], device_allocator, device_index);
+                        auto row_id_res = build_row_ids(i, segment_size, device_allocator, device_index);
                         row_ids_gpu = std::get<0>(row_id_res);
-                        e_row_id_gpu = std::get<1>(row_id_res);
-                        row_ids_host = std::get<2>(row_id_res);
-                        e_row_id_host = std::get<3>(row_id_res);
+                        n_rows_new[i] = std::get<1>(row_id_res);
+                        row_ids_host = device_allocator.alloc<int>(n_rows_new[i], false);
+                        e_row_ids_host = device_queues[device_index].memcpy(
+                            row_ids_host,
+                            row_ids_gpu,
+                            n_rows_new[i] * sizeof(int)
+                        );
                     }
 
                     seg.compress_sync(
                         row_ids_gpu,
-                        e_row_id_gpu,
                         row_ids_host,
-                        e_row_id_host,
-                        n_rows_new_array_host[i],
+                        e_row_ids_host,
+                        n_rows_new[i],
                         device_allocator,
                         device_index
                     );
@@ -469,28 +417,48 @@ public:
 
             if (flags_modified_devices[device_index][i])
             {
-                if (flags_modified_host[i])
-                {
-                    std::cerr << "Error: both flags modified on GPU and CPU during compress_and_sync." << std::endl;
-                    throw std::runtime_error("Both flags modified on GPU and CPU during compress_and_sync.");
-                }
                 bool *flags = flags_host + i * SEGMENT_SIZE;
-                auto e_memset = cpu_queue.memset(flags, 0, segment_size * sizeof(bool));
                 cpu_queue.submit(
                     [&](sycl::handler &cgh)
                     {
-                        cgh.depends_on(e_row_id_host);
-                        cgh.depends_on(e_memset);
+                        cgh.depends_on(e_row_ids_host);
                         cgh.parallel_for(
-                            n_rows_new_array_host[i],
+                            n_rows_new[i] - 1,
                             [=](sycl::id<1> idx)
                             {
-                                int row_id = row_ids_host[idx[0]];
-                                flags[row_id] = true;
+                                auto i = idx[0];
+                                int row_id = row_ids_host[i],
+                                    next_row_id = row_ids_host[i + 1];
+
+                                for (int r = row_id + 1; r < next_row_id; r++)
+                                    flags[r] = false;
                             }
                         );
                     }
                 );
+
+                e_row_ids_host.wait();
+
+                int first_row_id = row_ids_host[0];
+                if (first_row_id > 0)
+                {
+                    cpu_queue.memset(
+                        flags,
+                        0,
+                        first_row_id * sizeof(bool)
+                    );
+                }
+
+                int last_row_id = row_ids_host[n_rows_new[i] - 1];
+                if (last_row_id < segment_size - 1)
+                {
+                    cpu_queue.memset(
+                        flags + last_row_id + 1,
+                        0,
+                        (segment_size - 1 - last_row_id) * sizeof(bool)
+                    );
+                }
+
                 flags_modified_devices[device_index][i] = false;
             }
         }
@@ -915,8 +883,10 @@ public:
                 {
                     if (modified)
                     {
-                        need_sync = true;
-                        break;
+                        // need_sync = true;
+                        // break;
+                        std::cerr << "Error: aggregation flags on CPU to GPU modified not implemented yet" << std::endl;
+                        throw std::runtime_error("Flags on CPU to GPU modified not implemented yet.");
                     }
                 }
                 for (int d = 0; d < device_queues.size(); d++)
@@ -956,11 +926,13 @@ public:
 
             if (need_sync)
             {
-                compress_and_sync(
-                    cpu_allocator,
-                    device_allocators[0],
-                    0
-                );
+                for (int d = 0; d < device_queues.size(); d++)
+                    compress_and_sync(
+                        cpu_allocator,
+                        device_allocators[d],
+                        false,
+                        d
+                    );
             }
             uint64_t *final_result = (on_device ?
                 device_allocators[device_index].alloc_zero<uint64_t>(1) :
@@ -1046,8 +1018,10 @@ public:
                 {
                     if (modified)
                     {
-                        need_sync = true;
-                        break;
+                        // need_sync = true;
+                        // break;
+                        std::cerr << "Error: aggregation flags on CPU to GPU modified not implemented yet" << std::endl;
+                        throw std::runtime_error("Flags on CPU to GPU modified not implemented yet.");
                     }
                 }
                 for (int d = 0; d < device_queues.size(); d++)
@@ -1060,8 +1034,10 @@ public:
                     {
                         if (modified)
                         {
-                            need_sync = true;
-                            break;
+                            // need_sync = true;
+                            // break;
+                            std::cerr << "Error: aggregation flags on other GPU modified not implemented yet" << std::endl;
+                            throw std::runtime_error("Flags on other GPU modified not implemented yet.");
                         }
                     }
                 }
@@ -1095,12 +1071,14 @@ public:
                 columns_to_sync.push_back(const_cast<Column *>(agg_column));
                 for (int i = 0; i < group.size(); i++)
                     columns_to_sync.push_back(current_columns[group[i]]);
-                compress_and_sync(
-                    cpu_allocator,
-                    device_allocators[0],
-                    0,
-                    columns_to_sync
-                );
+                for (int d = 0; d < device_queues.size(); d++)
+                    compress_and_sync(
+                        cpu_allocator,
+                        device_allocators[d],
+                        false,
+                        d,
+                        columns_to_sync
+                    );
             }
 
             memory_manager &allocator = on_device ? device_allocators[device_index] : cpu_allocator;

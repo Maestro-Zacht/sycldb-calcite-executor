@@ -839,9 +839,8 @@ public:
     // assumption: sync point. needs to be improved
     sycl::event compress_sync(
         int *row_ids_device,
-        sycl::event &e_row_id_device,
         int *row_ids_host,
-        sycl::event &e_row_id_host,
+        sycl::event &e_row_ids_host,
         uint64_t nrows_selected,
         memory_manager &device_allocator,
         int device_index)
@@ -851,7 +850,7 @@ public:
             std::cerr << "Compress operator: cannot compress aggregate result segment" << std::endl;
             throw std::runtime_error("Compress operator: cannot compress aggregate result segment");
         }
-        if (!on_device)
+        if (!on_device || !on_device_vec[device_index])
         {
             std::cerr << "Compress operator: segment not on device" << std::endl;
             throw std::runtime_error("Compress operator: segment not on device");
@@ -865,7 +864,6 @@ public:
         auto e1 = device_queues[device_index].submit(
             [&](sycl::handler &cgh)
             {
-                cgh.depends_on(e_row_id_device);
                 cgh.parallel_for(
                     nrows_selected,
                     [=](sycl::id<1> idx)
@@ -893,7 +891,7 @@ public:
             [&](sycl::handler &cgh)
             {
                 cgh.depends_on(e2);
-                cgh.depends_on(e_row_id_host);
+                cgh.depends_on(e_row_ids_host);
                 cgh.parallel_for(
                     nrows_selected,
                     [=](sycl::id<1> idx)
@@ -906,7 +904,9 @@ public:
             }
         );
 
-        e3.wait();
+        dirty_cache = false;
+
+        // e3.wait();
 
         return e3;
     }
