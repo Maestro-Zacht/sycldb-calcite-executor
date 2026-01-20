@@ -876,16 +876,12 @@ public:
             }
         );
 
-        // e1.wait();
-
         auto e2 = device_queues[device_index].memcpy(
             data_host_compressed,
             data_device_compressed,
             nrows_selected * sizeof(int),
             e1
         );
-
-        // e2.wait();
 
         auto e3 = cpu_queue.submit(
             [&](sycl::handler &cgh)
@@ -905,8 +901,6 @@ public:
         );
 
         dirty_cache = false;
-
-        e3.wait();
 
         return e3;
     }

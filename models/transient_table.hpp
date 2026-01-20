@@ -411,7 +411,7 @@ public:
                         n_rows_new[i],
                         device_allocator,
                         device_index
-                    );
+                    ).wait(); // TODO: need to find why sometimes segfault if not wait here
                 }
             }
 
