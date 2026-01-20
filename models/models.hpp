@@ -906,7 +906,7 @@ public:
 
         dirty_cache = false;
 
-        // e3.wait();
+        e3.wait();
 
         return e3;
     }
