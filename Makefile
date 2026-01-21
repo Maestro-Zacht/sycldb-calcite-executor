@@ -1,4 +1,4 @@
-CXX := clang++ -fsycl -fsycl-embed-ir -Wall -fsycl-targets=nvptx64-nvidia-cuda,spir64
+CXX := clang++ -fsycl -fsycl-embed-ir -Wall -fsycl-targets=spir64,nvptx64-nvidia-cuda,amdgcn-amd-amdhsa -Xsycl-target-backend=nvptx64-nvidia-cuda "--offload-arch=sm_89" -Xsycl-target-backend=amdgcn-amd-amdhsa "--offload-arch=gfx90a"
 CXXFLAGS := -std=c++20 -O3 -I. -Ikernels -Igen-cpp -Ioperations -Imodels -I/usr/local/include
 LDFLAGS := -L/usr/local/lib -lthrift -Wl,-rpath=/usr/local/lib
 
@@ -29,6 +29,7 @@ clean:
 
 check:
 	@for q in $(RESULT_NAMES); do \
+		./sort.sh $$q; \
 		diff -q ./reference_results/$$q.txt ./$$q.res; \
 		echo "checked $$q"; \
 	done

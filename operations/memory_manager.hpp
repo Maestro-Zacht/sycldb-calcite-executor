@@ -38,6 +38,18 @@ memory_manager::memory_manager(sycl::queue &queue, uint64_t size)
     memory_region_zero_device = sycl::malloc_device<uint8_t>(size_zero_device, queue);
     memory_region_host = sycl::malloc_host<uint8_t>(size_host, queue);
 
+    if (memory_region_device == nullptr ||
+        memory_region_zero_device == nullptr ||
+        memory_region_host == nullptr)
+    {
+        std::cerr << "Memory manager failed to allocate memory regions." << std::endl;
+        throw std::bad_alloc();
+    }
+
+    allocated_device = 0;
+    allocated_zero_device = 0;
+    allocated_host = 0;
+
     reset().wait();
 }
 

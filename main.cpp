@@ -901,17 +901,21 @@ int data_driven_operator_replacement(int argc, char **argv)
             << "\nMemSize (MB): " << (memsize >> 20)
             << "\nMax Compute Units: " << max_compute_units
             << "\nPlatform: " << platform
-            << "\nBackend: " << backend
-            << "\n---------------------------------" << std::endl;
+            << "\nBackend: " << backend;
 
-        device_queues.emplace_back(
-            #if USE_FUSION
-            gpu,
-            sycl::ext::codeplay::experimental::property::queue::enable_fusion {}
+        if (backend == sycl::backend::opencl) // ignore 1. opencl gpu as it is already with level_zero (leave this) 2. ignore intel gpu because it breaks (remove if fix found)
+            std::cout << "\n(ignored)";
+        else
+            device_queues.emplace_back(
+                #if USE_FUSION
+                gpu,
+                sycl::ext::codeplay::experimental::property::queue::enable_fusion {}
         #else
-            gpu
-            #endif
-        );
+                gpu
+                #endif
+            );
+
+        std::cout << "\n---------------------------------" << std::endl;
     }
 
     #if USE_FUSION
@@ -966,29 +970,29 @@ int data_driven_operator_replacement(int argc, char **argv)
         std::cout << table.get_name() << " num segments: " << table.num_segments() << std::endl;
     }
 
-    tables[0].move_column_to_device(0, 1);
-    tables[0].move_column_to_device(2, 1);
-    tables[0].move_column_to_device(3, 1);
-    tables[0].move_column_to_device(4, 1);
+    tables[0].move_column_to_device(0, 0);
+    tables[0].move_column_to_device(2, 0);
+    tables[0].move_column_to_device(3, 0);
+    tables[0].move_column_to_device(4, 0);
 
-    tables[1].move_column_to_device(0, 0);
-    tables[1].move_column_to_device(3, 0);
-    tables[1].move_column_to_device(4, 0);
-    tables[1].move_column_to_device(5, 0);
+    tables[1].move_column_to_device(0, 1);
+    tables[1].move_column_to_device(3, 1);
+    tables[1].move_column_to_device(4, 1);
+    tables[1].move_column_to_device(5, 1);
 
-    tables[2].move_column_to_device(0, 1);
-    tables[2].move_column_to_device(3, 1);
-    tables[2].move_column_to_device(4, 1);
-    tables[2].move_column_to_device(5, 1);
+    tables[2].move_column_to_device(0, 2);
+    tables[2].move_column_to_device(3, 2);
+    tables[2].move_column_to_device(4, 2);
+    tables[2].move_column_to_device(5, 2);
 
-    tables[3].move_column_to_device(0, 0);
-    tables[3].move_column_to_device(4, 0);
-    tables[3].move_column_to_device(5, 0);
+    tables[3].move_column_to_device(0, 3);
+    tables[3].move_column_to_device(4, 3);
+    tables[3].move_column_to_device(5, 3);
 
-    tables[4].move_column_to_device(2, 1);
-    tables[4].move_column_to_device(3, 1);
-    tables[4].move_column_to_device(4, 0);
-    tables[4].move_column_to_device(5, 0);
+    tables[4].move_column_to_device(2, 2); // lo_custkey
+    tables[4].move_column_to_device(3, 0); // lo_partkey
+    tables[4].move_column_to_device(4, 1); // lo_suppkey
+    tables[4].move_column_to_device(5, 3); // lo_orderdate
 
     // tables[4].move_column_to_device(8, 0);
     // tables[4].move_column_to_device(9, 0);
@@ -1013,9 +1017,11 @@ int data_driven_operator_replacement(int argc, char **argv)
         for (int d = 0; d < device_queues.size(); d++)
             total_gpu_mem_per_device[d] += tables[i].get_data_size(true, d);
     }
-    std::cout << "Total memory used by tables: " << (total_mem >> 20) << " MB (CPU)" << std::endl;
+    std::cout << "Total memory used by tables:\nCPU: " << (total_mem >> 20) << " MB" << std::endl;
     for (int d = 0; d < device_queues.size(); d++)
-        std::cout << "GPU " << d << ": " << (total_gpu_mem_per_device[d] >> 20) << " MB" << std::endl;
+        std::cout << "GPU" << d
+        << " (" << device_queues[d].get_device().get_info<sycl::info::device::name>() << "): "
+        << (total_gpu_mem_per_device[d] >> 20) << " MB" << std::endl;
 
     memory_manager cpu_allocator(cpu_queue, SIZE_TEMP_MEMORY_CPU);
     std::vector<memory_manager> device_allocators;
@@ -1169,26 +1175,38 @@ int test()
     }
     else
     {
+        std::cout << "Creating queues for GPU devices..." << std::endl;
         for (const auto &device : devices)
         {
-            queues.emplace_back(
-                #if USE_FUSION
-                device,
-                sycl::ext::codeplay::experimental::property::queue::enable_fusion {}
+            auto name = device.get_info<sycl::info::device::name>();
+            auto device_type = device.get_info<sycl::info::device::device_type>();
+            auto backend = device.get_backend();
+            std::cout << "Device name: " << name << std::endl;
+            if (device_type == sycl::info::device_type::gpu && (backend == sycl::backend::opencl || backend == sycl::backend::ext_oneapi_hip))
+                std::cout << "device ignored" << std::endl;
+            else
+                queues.emplace_back(
+                    #if USE_FUSION
+                    device,
+                    sycl::ext::codeplay::experimental::property::queue::enable_fusion {}
             #else
-                device
-                #endif
-            );
+                    device
+                    #endif
+                );
         }
 
         std::cout << "Successfully created " << queues.size() << " queue(s) for GPU(s)." << std::endl;
 
         for (sycl::queue &queue : queues)
         {
+            std::cout << "Running test on device: "
+                << queue.get_device().get_info<sycl::info::device::name>()
+                << std::endl;
             #if USE_FUSION
             sycl::ext::codeplay::experimental::fusion_wrapper fw{ queue };
             #endif
             int *data = sycl::malloc_device<int>(1024, queue);
+            int *host_data = sycl::malloc_host<int>(1024, queue);
 
             #if USE_FUSION
             fw.start_fusion();
@@ -1217,13 +1235,34 @@ int test()
             );
 
             #if USE_FUSION
-            fw.complete_fusion(sycl::ext::codeplay::experimental::property::no_barriers {});
+            e2 = fw.complete_fusion(sycl::ext::codeplay::experimental::property::no_barriers {});
             #endif
-        }
-
-        for (sycl::queue &queue : queues)
+            std::cout << "Submitted kernel executions." << std::endl;
             queue.wait_and_throw();
+            std::cout << "Finished kernel execution." << std::endl;
+
+            queue.copy(data, host_data, 1024).wait();
+            bool correct = true;
+            for (int i = 0; i < 1024; i++)
+            {
+                if (host_data[i] != i * 2)
+                {
+                    correct = false;
+                    std::cout << "Data mismatch at index " << i << ": expected " << i * 2 << ", got " << host_data[i] << std::endl;
+                    break;
+                }
+            }
+            if (correct)
+                std::cout << "Test passed on device: " << queue.get_device().get_info<sycl::info::device::name>() << std::endl;
+            else
+                std::cout << "!!!!! Test failed on device: " << queue.get_device().get_info<sycl::info::device::name>() << std::endl;
+
+            sycl::free(data, queue);
+            sycl::free(host_data, queue);
+        }
     }
+
+    std::cout << "Test completed." << std::endl;
 
     return 0;
 }
