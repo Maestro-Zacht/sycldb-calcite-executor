@@ -219,8 +219,20 @@ public:
         : KernelDefinition(col_len), data(data), flags(flags), agg_res(agg_res)
     {}
 
-    void operator()(sycl::id<1> idx) const
+    uint64_t *get_agg_res() const
     {
+        return agg_res;
+    }
+
+    // This optimization works only on CPU, where the reduction is quite beneficial and fusion is not
+    void operator()(sycl::id<1> idx
+        #if not USE_FUSION
+        ,
+        auto &sum
+        #endif
+        ) const
+    {
+        #if USE_FUSION
         if (flags[idx])
         {
             sycl::atomic_ref<
@@ -231,6 +243,9 @@ public:
             > sum_obj(*agg_res);
             sum_obj.fetch_add(data[idx]);
         }
+        #else
+        sum.combine(data[idx] * flags[idx]);
+        #endif
     }
 };
 

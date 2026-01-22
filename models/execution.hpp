@@ -241,6 +241,9 @@ public:
         case KernelType::AggregateOperationKernel:
         {
             AggregateOperationKernel *kernel = static_cast<AggregateOperationKernel *>(kernel_def.get());
+            #if not USE_FUSION
+            uint64_t *agg_res_ptr = kernel->get_agg_res();
+            #endif
             auto e = queue.submit(
                 [&](sycl::handler &cgh)
                 {
@@ -249,7 +252,10 @@ public:
 
                     cgh.parallel_for(
                         kernel->get_col_len(),
-                        *kernel
+                        #if not USE_FUSION
+                        sycl::reduction(agg_res_ptr, sycl::plus<uint64_t>()),
+                        #endif
+                        * kernel
                     );
                 }
             );
