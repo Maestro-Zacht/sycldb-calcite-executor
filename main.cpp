@@ -1150,138 +1150,83 @@ int data_driven_operator_replacement(int argc, char **argv)
     return 0;
 }
 
-int test()
+int test(int argc, char **argv)
 {
-    std::vector<sycl::device> devices = sycl::device::get_devices();
-    std::vector<sycl::queue> queues;
-    queues.reserve(devices.size());
+    std::shared_ptr<TTransport> socket(new TSocket("localhost", 5555));
+    std::shared_ptr<TTransport> transport(new TBufferedTransport(socket));
+    std::shared_ptr<TProtocol> protocol(new TBinaryProtocol(transport));
+    CalciteServerClient client(protocol);
+    std::string sql;
 
-    std::cout << "Found " << devices.size() << " device(s):" << std::endl;
-    std::cout << "---------------------------------" << std::endl;
-
-    for (const auto &device : devices)
+    if (argc == 2)
     {
-        auto name = device.get_info<sycl::info::device::name>();
-        auto vendor = device.get_info<sycl::info::device::vendor>();
-        auto memsize = device.get_info<sycl::info::device::global_mem_size>();
-        auto platform = device.get_info<sycl::info::device::platform>().get_info<sycl::info::platform::name>();
-        auto max_compute_units = device.get_info<sycl::info::device::max_compute_units>();
-        auto backend = device.get_backend();
-        // auto max_mem_bandwidth = device.get_info<sycl::info::device::ext_intel_max_mem_bandwidth>();
-        auto local_mem_size = device.get_info<sycl::info::device::local_mem_size>();
+        std::ifstream file(argv[1]);
+        if (!file.is_open())
+        {
+            std::cerr << "Could not open file: " << argv[1] << std::endl;
+            return 1;
+        }
 
-        std::cout << "Name:    " << name << std::endl;
-        std::cout << "Vendor:  " << vendor << std::endl;
-        std::cout << "MemSize (GB): " << (memsize >> 30) << std::endl;
-        // std::cout << "Max Mem Bandwidth (MB/s): " << max_mem_bandwidth << std::endl;
-        std::cout << "Local Mem Size (KB): " << (local_mem_size >> 10) << std::endl;
-        std::cout << "Max Compute Units: " << max_compute_units << std::endl;
-        std::cout << "Platform: " << platform << std::endl;
-        std::cout << "Backend: " << backend << std::endl;
-        std::cout << "---------------------------------" << std::endl;
+        sql.assign((std::istreambuf_iterator<char>(file)),
+            std::istreambuf_iterator<char>());
+
+        file.close();
+    }
+    else
+    {
+        sql = "select sum(lo_revenue)\
+        from lineorder, ddate, part, supplier\
+        where lo_orderdate = d_datekey\
+        and lo_partkey = p_partkey\
+        and lo_suppkey = s_suppkey;";
     }
 
-    // if (devices.empty())
-    // {
-    //     std::cout << "No devices found" << std::endl;
-    // }
-    // else
-    // {
-    //     std::cout << "Creating queues for GPU devices..." << std::endl;
-    //     for (const auto &device : devices)
-    //     {
-    //         auto name = device.get_info<sycl::info::device::name>();
-    //         auto device_type = device.get_info<sycl::info::device::device_type>();
-    //         auto backend = device.get_backend();
-    //         std::cout << "Device name: " << name << std::endl;
-    //         if (device_type == sycl::info::device_type::gpu && (backend == sycl::backend::opencl || backend == sycl::backend::ext_oneapi_hip))
-    //             std::cout << "device ignored" << std::endl;
-    //         else
-    //             queues.emplace_back(
-    //                 #if USE_FUSION
-    //                 device,
-    //                 sycl::ext::codeplay::experimental::property::queue::enable_fusion {}
-    //         #else
-    //                 device
-    //                 #endif
-    //             );
-    //     }
+    std::string sql_filename = argv[1];
+    std::string query_name = sql_filename.substr(sql_filename.find_last_of("/") + 1, 3);
+    std::ofstream perf_file(query_name + "-e2e-sql-layer.log", std::ios::out | std::ios::trunc);
+    if (!perf_file.is_open())
+    {
+        std::cerr << "Could not open performance log file: " << query_name << "-e2e-sql-layer.log" << std::endl;
+        return 1;
+    }
 
-    //     std::cout << "Successfully created " << queues.size() << " queue(s) for GPU(s)." << std::endl;
+    try
+    {
+        transport->open();
 
-    //     for (sycl::queue &queue : queues)
-    //     {
-    //         std::cout << "Running test on device: "
-    //             << queue.get_device().get_info<sycl::info::device::name>()
-    //             << std::endl;
-    //         #if USE_FUSION
-    //         sycl::ext::codeplay::experimental::fusion_wrapper fw{ queue };
-    //         #endif
-    //         int *data = sycl::malloc_device<int>(1024, queue);
-    //         int *host_data = sycl::malloc_host<int>(1024, queue);
+        client.ping();
+        for (int i = 0; i < PERFORMANCE_REPETITIONS; i++)
+        {
+            PlanResult result;
 
-    //         #if USE_FUSION
-    //         fw.start_fusion();
-    //         #endif
+            auto start = std::chrono::high_resolution_clock::now();
+            client.parse(result, sql);
+            auto end = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double, std::micro> total_time = end - start;
 
-    //         auto e1 = queue.parallel_for(
-    //             sycl::range<1>(1024),
-    //             [=](sycl::id<1> idx)
-    //             {
-    //                 data[idx] = idx[0];
-    //             }
-    //         );
-
-    //         auto e2 = queue.submit(
-    //             [=](sycl::handler &cgh)
-    //             {
-    //                 cgh.depends_on(e1);
-    //                 cgh.parallel_for(
-    //                     sycl::range<1>(1024),
-    //                     [=](sycl::id<1> idx)
-    //                     {
-    //                         data[idx] *= 2;
-    //                     }
-    //                 );
-    //             }
-    //         );
-
-    //         #if USE_FUSION
-    //         e2 = fw.complete_fusion(sycl::ext::codeplay::experimental::property::no_barriers {});
-    //         #endif
-    //         std::cout << "Submitted kernel executions." << std::endl;
-    //         queue.wait_and_throw();
-    //         std::cout << "Finished kernel execution." << std::endl;
-
-    //         queue.copy(data, host_data, 1024).wait();
-    //         bool correct = true;
-    //         for (int i = 0; i < 1024; i++)
-    //         {
-    //             if (host_data[i] != i * 2)
-    //             {
-    //                 correct = false;
-    //                 std::cout << "Data mismatch at index " << i << ": expected " << i * 2 << ", got " << host_data[i] << std::endl;
-    //                 break;
-    //             }
-    //         }
-    //         if (correct)
-    //             std::cout << "Test passed on device: " << queue.get_device().get_info<sycl::info::device::name>() << std::endl;
-    //         else
-    //             std::cout << "!!!!! Test failed on device: " << queue.get_device().get_info<sycl::info::device::name>() << std::endl;
-
-    //         sycl::free(data, queue);
-    //         sycl::free(host_data, queue);
-    //     }
-    // }
-
-    // std::cout << "Test completed." << std::endl;
+            perf_file << total_time.count() << '\n';
+        }
+        transport->close();
+    }
+    catch (TTransportException &e)
+    {
+        std::cerr << "Transport exception: " << e.what() << std::endl;
+    }
+    catch (TException &e)
+    {
+        std::cerr << "Thrift exception: " << e.what() << std::endl;
+    }
+    catch (...)
+    {
+        std::cerr << "Unknown exception" << std::endl;
+    }
 
     return 0;
 }
 
 int main(int argc, char **argv)
 {
-    int r = test();
+    int r = test(argc, argv);
     // int r = normal_execution(argc, argv);
     // int r = data_driven_operator_replacement(argc, argv);
 
