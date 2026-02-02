@@ -4,84 +4,78 @@
 
 #define MEMORY_MANAGER_DEBUG_INFO 0
 
-class memory_manager
+class memory_region
 {
 private:
-    void *memory_region_device, *current_free_device,
-        *memory_region_zero_device, *current_free_zero_device,
-        *memory_region_host, *current_free_host;
-    uint64_t size_device, allocated_device,
-        size_zero_device, allocated_zero_device,
-        size_host, allocated_host;
+    void *memory_ptr, *current_free;
+    uint64_t size, allocated;
     sycl::queue &queue;
+    bool zero;
 public:
-    memory_manager(sycl::queue &queue, uint64_t size);
-    ~memory_manager();
+    memory_region(sycl::queue &queue, uint64_t size, bool on_device, bool zero);
+    ~memory_region();
 
     template <typename T>
-    T *alloc(uint64_t count, bool on_device);
+    bool can_alloc(uint64_t count) const;
 
     template <typename T>
-    T *alloc_zero(uint64_t count);
+    T *alloc(uint64_t count);
 
     sycl::event reset();
 };
 
-memory_manager::memory_manager(sycl::queue &queue, uint64_t size)
-    : size_device(size), size_zero_device(size >> 6), size_host(size), queue(queue)
+memory_region::memory_region(sycl::queue &queue, uint64_t size, bool on_device, bool zero)
+    : size(size), queue(queue), zero(zero)
 {
     #if MEMORY_MANAGER_DEBUG_INFO
-    std::cout << "Allocating memory region of size " << size_device << " bytes on device + " << size_zero_device << " bytes zero on device and " << size_host << " bytes on host." << std::endl;
+    std::cout << "Allocating memory region of size " << size << " bytes on "
+        << (on_device ? "device" : "host") << (zero ? " with zeroing." : ".") << std::endl;
     #endif
 
-    memory_region_device = sycl::malloc_device<uint8_t>(size_device, queue);
-    memory_region_zero_device = sycl::malloc_device<uint8_t>(size_zero_device, queue);
-    memory_region_host = sycl::malloc_host<uint8_t>(size_host, queue);
+    if (on_device)
+        memory_ptr = sycl::malloc_device<uint8_t>(size, queue);
+    else
+        memory_ptr = sycl::malloc_host<uint8_t>(size, queue);
 
-    if (memory_region_device == nullptr ||
-        memory_region_zero_device == nullptr ||
-        memory_region_host == nullptr)
+    if (memory_ptr == nullptr)
     {
-        std::cerr << "Memory manager failed to allocate memory regions." << std::endl;
+        std::cerr << "Memory region failed to allocate memory." << std::endl;
         throw std::bad_alloc();
     }
 
-    allocated_device = 0;
-    allocated_zero_device = 0;
-    allocated_host = 0;
-
-    reset().wait();
+    allocated = 0;
+    reset();
 }
 
-
-memory_manager::~memory_manager()
+memory_region::~memory_region()
 {
     #if MEMORY_MANAGER_DEBUG_INFO
     std::cout << "Freeing memory region of size "
-        << (allocated_device >> 20) << "/" << (size_device >> 20) << " MB on device + "
-        << (allocated_zero_device >> 20) << "/" << (size_zero_device >> 20) << " MB zero on device and "
-        << (allocated_host >> 20) << "/" << (size_host >> 20) << " MB on host."
+        << (allocated >> 20) << "/" << (size >> 20) << " MB on "
+        << (zero ? "zeroed " : "") << (queue.get_device().is_host() ? "host." : "device.")
         << std::endl;
     #endif
 
-    sycl::free(memory_region_device, queue);
-    sycl::free(memory_region_zero_device, queue);
-    sycl::free(memory_region_host, queue);
+    sycl::free(memory_ptr, queue);
 
     #if MEMORY_MANAGER_DEBUG_INFO
-    std::cout << "Memory regions freed." << std::endl;
+    std::cout << "Memory region freed." << std::endl;
     #endif
 }
 
 template <typename T>
-T *memory_manager::alloc(uint64_t count, bool on_device)
+bool memory_region::can_alloc(uint64_t count) const
 {
     uint64_t bytes = count * sizeof(T);
     bytes = (bytes + 7) & (~7); // align to 8 bytes
+    return (allocated + bytes <= size);
+}
 
-    uint64_t &allocated = on_device ? allocated_device : allocated_host,
-        &size = on_device ? size_device : size_host;
-    void *&current_free = on_device ? current_free_device : current_free_host;
+template <typename T>
+T *memory_region::alloc(uint64_t count)
+{
+    uint64_t bytes = count * sizeof(T);
+    bytes = (bytes + 7) & (~7); // align to 8 bytes
 
     #if MEMORY_MANAGER_DEBUG_INFO
     std::cout << "Memory manager allocating " << bytes << " bytes. "
@@ -90,8 +84,7 @@ T *memory_manager::alloc(uint64_t count, bool on_device)
 
     if (allocated + bytes > size)
     {
-        std::cerr << "Memory manager out of memory on "
-            << (on_device ? "device" : "host") << ": requested " << bytes << " bytes, "
+        std::cerr << "Memory manager out of memory: requested " << bytes << " bytes, "
             << (size - allocated) << " bytes available." << std::endl;
         throw std::bad_alloc();
     }
@@ -104,50 +97,123 @@ T *memory_manager::alloc(uint64_t count, bool on_device)
     return ptr;
 }
 
+sycl::event memory_region::reset()
+{
+    sycl::event e;
+
+    current_free = memory_ptr;
+    allocated = 0;
+
+    if (zero)
+        e = queue.memset(memory_ptr, 0, size);
+
+    return e;
+}
+
+class memory_manager
+{
+private:
+    std::vector<memory_region> regions_device;
+    std::vector<memory_region> regions_host;
+    std::vector<memory_region> regions_zero_device;
+public:
+    memory_manager(sycl::queue &queue, uint64_t size, uint64_t max_region_size);
+
+    template <typename T>
+    T *alloc(uint64_t count, bool on_device);
+
+    template <typename T>
+    T *alloc_zero(uint64_t count);
+
+    std::vector<sycl::event> reset();
+};
+
+memory_manager::memory_manager(sycl::queue &queue, uint64_t size, uint64_t max_region_size)
+{
+    uint64_t size_left = size >> 6,
+        num_regions = (size_left + max_region_size - 1) / max_region_size;
+    regions_zero_device.reserve(num_regions);
+    while (size_left > 0)
+    {
+        uint64_t region_size = (size_left > max_region_size) ? max_region_size : size_left;
+
+        regions_zero_device.emplace_back(queue, region_size, true, true);
+
+        size_left -= region_size;
+    }
+
+    size_left = size;
+    num_regions = (size_left + max_region_size - 1) / max_region_size;
+    regions_device.reserve(num_regions);
+    regions_host.reserve(num_regions);
+    while (size_left > 0)
+    {
+        uint64_t region_size = (size_left > max_region_size) ? max_region_size : size_left;
+
+        regions_device.emplace_back(queue, region_size, true, false);
+        regions_host.emplace_back(queue, region_size, false, false);
+
+        size_left -= region_size;
+    }
+
+    queue.wait();
+}
+
+template <typename T>
+T *memory_manager::alloc(uint64_t count, bool on_device)
+{
+    std::vector<memory_region> &regions = on_device ? regions_device : regions_host;
+
+    for (auto &region : regions)
+    {
+        if (region.can_alloc<T>(count))
+        {
+            return region.alloc<T>(count);
+        }
+    }
+
+    std::cerr << "Memory manager out of memory regions on " << (on_device ? "device" : "host") << std::endl;
+    throw std::bad_alloc();
+}
+
 template <typename T>
 T *memory_manager::alloc_zero(uint64_t count)
 {
-    uint64_t bytes = count * sizeof(T);
-    bytes = (bytes + 7) & (~7); // align to 8 bytes
-
-    #if MEMORY_MANAGER_DEBUG_INFO
-    std::cout << "Memory manager allocating " << bytes << " bytes zeroed on device." << std::endl;
-    #endif
-
-    if (allocated_zero_device + bytes > size_zero_device)
+    for (auto &region : regions_zero_device)
     {
-        std::cerr << "Memory manager out of zeroed memory on device: requested " << bytes << " bytes, "
-            << (size_zero_device - allocated_zero_device) << " bytes available." << std::endl;
-        throw std::bad_alloc();
+        if (region.can_alloc<T>(count))
+        {
+            return region.alloc<T>(count);
+        }
     }
 
-    T *ptr = reinterpret_cast<T *>(current_free_zero_device);
-
-    current_free_zero_device = static_cast<void *>(static_cast<uint8_t *>(current_free_zero_device) + bytes);
-    allocated_zero_device += bytes;
-
-    return ptr;
+    std::cerr << "Memory manager out of zeroed memory regions on device" << std::endl;
+    throw std::bad_alloc();
 }
 
-sycl::event memory_manager::reset()
+std::vector<sycl::event> memory_manager::reset()
 {
-    // #if MEMORY_MANAGER_DEBUG_INFO
-    std::cout << "reset "
-        << (allocated_device >> 20) << "/" << (size_device >> 20) << " MB on device + "
-        << (allocated_zero_device >> 20) << "/" << (size_zero_device >> 20) << " MB zero on device and "
-        << (allocated_host >> 20) << "/" << (size_host >> 20) << " MB on host"
-        << std::endl;
-    // #endif
+    std::vector<sycl::event> events;
+    events.reserve(
+        regions_device.size() +
+        regions_host.size() +
+        regions_zero_device.size()
+    );
 
-    auto e1 = queue.memset(memory_region_zero_device, 0, size_zero_device);
+    for (auto &region : regions_device)
+    {
+        events.push_back(region.reset());
+    }
 
-    current_free_device = memory_region_device;
-    current_free_zero_device = memory_region_zero_device;
-    current_free_host = memory_region_host;
+    for (auto &region : regions_host)
+    {
+        events.push_back(region.reset());
+    }
 
-    allocated_device = 0;
-    allocated_zero_device = 0;
-    allocated_host = 0;
+    for (auto &region : regions_zero_device)
+    {
+        events.push_back(region.reset());
+    }
 
-    return e1;
+    return events;
 }
