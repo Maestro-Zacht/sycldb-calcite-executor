@@ -353,7 +353,7 @@ public:
     }
 
     // This is a sync point
-    void compress_and_sync(memory_manager &cpu_allocator, memory_manager &device_allocator, bool rm, int device_index, const std::vector<Column *> &columns_to_sync = {})
+    void compress_and_sync(memory_manager &cpu_allocator, memory_manager &device_allocator, int device_index, const std::vector<Column *> &columns_to_sync = {})
     {
         if (device_index < 0 || device_index >= device_queues.size())
         {
@@ -363,7 +363,7 @@ public:
 
         int num_segments = nrows / SEGMENT_SIZE + (nrows % SEGMENT_SIZE > 0);
         std::vector<uint64_t> n_rows_new(num_segments);
-        auto dependencies = execute_pending_kernels();
+        execute_pending_kernels();
 
         device_queues[device_index].wait();
 
@@ -930,7 +930,6 @@ public:
                     compress_and_sync(
                         cpu_allocator,
                         device_allocators[d],
-                        false,
                         d
                     );
             }
@@ -1075,7 +1074,6 @@ public:
                     compress_and_sync(
                         cpu_allocator,
                         device_allocators[d],
-                        false,
                         d,
                         columns_to_sync
                     );
@@ -1143,13 +1141,13 @@ public:
             // std::cout << "Executing aggregate kernels" << std::endl;
             auto dependencies = execute_pending_kernels();
 
-            bool *new_cpu_flags = cpu_allocator.alloc<bool>(prod_ranges, true);
+            bool *new_cpu_flags = device_allocators[device_index].alloc<bool>(prod_ranges, false);
+            flags_host = new_cpu_flags;
 
             nrows = prod_ranges;
 
             uint64_t segment_num = nrows / SEGMENT_SIZE + (nrows % SEGMENT_SIZE > 0);
 
-            // TODO: use compress sync here too
             if (on_device)
             {
                 bool *new_gpu_flags = device_allocators[device_index].alloc<bool>(prod_ranges, true);
@@ -1168,6 +1166,7 @@ public:
                     }
                 );
 
+                flags_devices[device_index] = new_gpu_flags;
                 pending_kernels_dependencies_devices[device_index].push_back(
                     device_queues[device_index].memcpy(
                         new_cpu_flags,
@@ -1178,20 +1177,25 @@ public:
                 );
                 for (int d = 0; d < device_queues.size(); d++)
                 {
-                    if (d != device_index)
-                    {
-                        bool *new_flags = device_allocators[d].alloc<bool>(prod_ranges, true);
-                        pending_kernels_dependencies_devices[d].push_back(
-                            device_queues[d].memcpy(
-                                new_flags,
-                                new_gpu_flags,
-                                sizeof(bool) * prod_ranges,
-                                e1
-                            )
-                        );
-                        flags_devices[d] = new_flags;
-                    }
-                    flags_modified_devices[d] = std::vector<bool>(segment_num, false);
+                    // if (d != device_index)
+                    // {
+                    //     bool *new_flags = device_allocators[d].alloc<bool>(prod_ranges, true);
+                    //     pending_kernels_dependencies_devices[d].push_back(
+                    //         device_queues[d].memcpy(
+                    //             new_flags,
+                    //             new_gpu_flags,
+                    //             sizeof(bool) * prod_ranges,
+                    //             e1
+                    //         )
+                    //     );
+                    //     flags_devices[d] = new_flags;
+                    // }
+                    flags_modified_devices[d].resize(segment_num, false);
+                    std::fill(
+                        flags_modified_devices[d].begin(),
+                        flags_modified_devices[d].end(),
+                        false
+                    );
                 }
             }
             else
@@ -1245,8 +1249,12 @@ public:
             );
             current_columns.push_back(&agg_col);
 
-            flags_host = new_cpu_flags;
-            flags_modified_host = std::vector<bool>(segment_num, false);
+            flags_modified_host.resize(segment_num, false);
+            std::fill(
+                flags_modified_host.begin(),
+                flags_modified_host.end(),
+                false
+            );
         }
     }
 

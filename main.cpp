@@ -855,7 +855,7 @@ std::chrono::duration<double, std::milli> ddor_execute_result(
     TransientTable &final_table = transient_tables[output_table[result.rels.size() - 1]];
 
     for (int d = 0; d < device_queues.size(); d++)
-        final_table.compress_and_sync(cpu_allocator, device_allocators[d], false, d);
+        final_table.compress_and_sync(cpu_allocator, device_allocators[d], d);
     final_table.execute_pending_kernels();
     cpu_queue.wait_and_throw();
     for (sycl::queue &q : device_queues)
