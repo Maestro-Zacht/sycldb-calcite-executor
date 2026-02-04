@@ -1141,7 +1141,8 @@ public:
             // std::cout << "Executing aggregate kernels" << std::endl;
             auto dependencies = execute_pending_kernels();
 
-            bool *new_cpu_flags = device_allocators[device_index].alloc<bool>(prod_ranges, false);
+            bool *new_cpu_flags = on_device ? device_allocators[device_index].alloc<bool>(prod_ranges, false) :
+                cpu_allocator.alloc<bool>(prod_ranges, true);
             flags_host = new_cpu_flags;
 
             nrows = prod_ranges;
