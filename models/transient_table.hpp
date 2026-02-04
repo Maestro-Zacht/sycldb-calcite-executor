@@ -193,6 +193,10 @@ public:
                 {
                     fw_devices[d].start_fusion();
                 }
+                // else if (d == -1 && fuse)
+                // {
+                //     fw_cpu.start_fusion();
+                // }
                 #endif
 
                 for (const auto &phases : pending_kernels)
@@ -220,16 +224,32 @@ public:
                 }
 
                 #if USE_FUSION
-                if (d == -1 && kernel_present)
+                if (d == -1)
                 {
-                    events_cpu.insert(
-                        events_cpu.end(),
-                        deps_cpu.begin(),
-                        deps_cpu.end()
-                    );
-                    executed_cpu = true;
+                    if (kernel_present)
+                    {
+                        // if (fuse)
+                        // {
+                        //     events_cpu.push_back(
+                        //         fw_cpu.complete_fusion(sycl::ext::codeplay::experimental::property::no_barriers {})
+                        //     );
+                        // }
+                        // else
+                        // {
+                        events_cpu.insert(
+                            events_cpu.end(),
+                            deps_cpu.begin(),
+                            deps_cpu.end()
+                        );
+                        // }
+                        executed_cpu = true;
+                    }
+                    // else if (fuse)
+                    // {
+                    //     fw_cpu.cancel_fusion();
+                    // }
                 }
-                else if (d >= 0)
+                else
                 {
                     if (!kernel_present)
                     {
