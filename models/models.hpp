@@ -856,8 +856,11 @@ public:
         }
 
         dirty_cache = false;
+        int *device_ptr = device_ptrs[device_index];
+        sycl::queue &device_queue = device_queues[device_index], &cpu_queue = this->cpu_queue;
+        int *host_ptr = data_host;
 
-        return device_queues[device_index].submit(
+        return device_queue.submit(
             [&](sycl::handler &cgh)
             {
                 cgh.depends_on(e_nrows_selected_host);
@@ -867,10 +870,7 @@ public:
                         uint64_t nrows_selected = *nrows_selected_host;
                         int *data_device_compressed = device_allocator.alloc<int>(nrows_selected, true);
                         int *data_host_compressed = device_allocator.alloc<int>(nrows_selected, false);
-                        int *device_ptr = device_ptrs[device_index];
-                        int *host_ptr = data_host;
-
-                        auto e1 = device_queues[device_index].submit(
+                        auto e1 = device_queue.submit(
                             [&](sycl::handler &cgh)
                             {
                                 cgh.parallel_for(
@@ -885,7 +885,7 @@ public:
                             }
                         );
 
-                        auto e2 = device_queues[device_index].memcpy(
+                        auto e2 = device_queue.memcpy(
                             data_host_compressed,
                             data_device_compressed,
                             nrows_selected * sizeof(int),

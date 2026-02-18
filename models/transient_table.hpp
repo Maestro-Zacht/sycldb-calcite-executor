@@ -397,9 +397,9 @@ public:
 
         auto deps = execute_pending_kernels();
 
-        pending_kernels_dependencies_cpu = deps.first;
         for (int d = 0; d < device_queues.size(); d++)
-            pending_kernels_dependencies_devices[d] = deps.second[d];
+            if (d != device_index)
+                pending_kernels_dependencies_devices[d] = deps.second[d];
 
         for (int i = 0; i < num_segments; i++)
         {
@@ -427,7 +427,9 @@ public:
                 memory_manager *allocator_to_use = &device_allocator;
                 int **row_ids_host_ptr = &row_ids_host;
 
-                e_row_ids_host = device_queues[device_index].submit(
+                sycl::queue &device_queue = device_queues[device_index];
+
+                e_row_ids_host = device_queue.submit(
                     [&](sycl::handler &cgh)
                     {
                         cgh.depends_on(e_n_rows_host);
@@ -436,7 +438,7 @@ public:
                             [=]() mutable
                             {
                                 *row_ids_host_ptr = allocator_to_use->alloc<int>(*n_rows_new_host, false);
-                                device_queues[device_index].memcpy(
+                                device_queue.memcpy(
                                     *row_ids_host_ptr,
                                     row_ids_gpu,
                                     (*n_rows_new_host) * sizeof(int)
@@ -464,7 +466,9 @@ public:
                         memory_manager *allocator_to_use = &device_allocator;
                         int **row_ids_host_ptr = &row_ids_host;
 
-                        e_row_ids_host = device_queues[device_index].submit(
+                        sycl::queue &device_queue = device_queues[device_index];
+
+                        e_row_ids_host = device_queue.submit(
                             [&](sycl::handler &cgh)
                             {
                                 cgh.depends_on(e_n_rows_host);
@@ -473,7 +477,7 @@ public:
                                     [=]() mutable
                                     {
                                         *row_ids_host_ptr = allocator_to_use->alloc<int>(*n_rows_new_host, false);
-                                        device_queues[device_index].memcpy(
+                                        device_queue.memcpy(
                                             *row_ids_host_ptr,
                                             row_ids_gpu,
                                             (*n_rows_new_host) * sizeof(int)
@@ -498,48 +502,72 @@ public:
 
             if (flags_modified_devices[device_index][i])
             {
-                // TODO: convert here + events
                 bool *flags = flags_host + i * SEGMENT_SIZE;
+
+                sycl::queue &cpu_queue = this->cpu_queue;
                 cpu_queue.submit(
                     [&](sycl::handler &cgh)
                     {
-                        cgh.depends_on(e_row_ids_host);
-                        cgh.parallel_for(
-                            n_rows_new - 1,
-                            [=](sycl::id<1> idx)
+                        cgh.depends_on(e_n_rows_host);
+                        cgh.host_task(
+                            [=]() mutable
                             {
-                                auto i = idx[0];
-                                int row_id = row_ids_host[i],
-                                    next_row_id = row_ids_host[i + 1];
+                                uint64_t n_rows_new = *n_rows_new_host;
+                                cpu_queue.submit(
+                                    [&](sycl::handler &cgh2)
+                                    {
+                                        cgh2.depends_on(e_row_ids_host);
+                                        cgh2.parallel_for(
+                                            n_rows_new - 1,
+                                            [=](sycl::id<1> idx)
+                                            {
+                                                auto i = idx[0];
+                                                int row_id = row_ids_host[i],
+                                                    next_row_id = row_ids_host[i + 1];
 
-                                for (int r = row_id + 1; r < next_row_id; r++)
-                                    flags[r] = false;
+                                                for (int r = row_id + 1; r < next_row_id; r++)
+                                                    flags[r] = false;
+                                            }
+                                        );
+                                    }
+                                );
                             }
                         );
                     }
                 );
 
-                e_row_ids_host.wait();
+                cpu_queue.submit(
+                    [&](sycl::handler &cgh)
+                    {
+                        cgh.depends_on(e_n_rows_host);
+                        cgh.depends_on(e_row_ids_host);
+                        cgh.host_task(
+                            [=]() mutable
+                            {
+                                uint64_t n_rows_new = *n_rows_new_host;
+                                int first_row_id = row_ids_host[0];
+                                if (first_row_id > 0)
+                                {
+                                    cpu_queue.memset(
+                                        flags,
+                                        0,
+                                        first_row_id * sizeof(bool)
+                                    );
+                                }
 
-                int first_row_id = row_ids_host[0];
-                if (first_row_id > 0)
-                {
-                    cpu_queue.memset(
-                        flags,
-                        0,
-                        first_row_id * sizeof(bool)
-                    );
-                }
-
-                int last_row_id = row_ids_host[n_rows_new - 1];
-                if (last_row_id < segment_size - 1)
-                {
-                    cpu_queue.memset(
-                        flags + last_row_id + 1,
-                        0,
-                        (segment_size - 1 - last_row_id) * sizeof(bool)
-                    );
-                }
+                                int last_row_id = row_ids_host[n_rows_new - 1];
+                                if (last_row_id < segment_size - 1)
+                                {
+                                    cpu_queue.memset(
+                                        flags + last_row_id + 1,
+                                        0,
+                                        (segment_size - 1 - last_row_id) * sizeof(bool)
+                                    );
+                                }
+                            }
+                        );
+                    }
+                );
 
                 flags_modified_devices[device_index][i] = false;
             }
