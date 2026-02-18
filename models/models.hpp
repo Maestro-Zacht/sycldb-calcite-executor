@@ -839,7 +839,8 @@ public:
         int *row_ids_device,
         int *row_ids_host,
         sycl::event &e_row_ids_host,
-        uint64_t nrows_selected,
+        uint64_t *nrows_selected_host,
+        sycl::event &e_nrows_selected_host,
         memory_manager &device_allocator,
         int device_index)
     {
@@ -854,53 +855,63 @@ public:
             throw std::runtime_error("Compress operator: segment not on device");
         }
 
-        int *data_device_compressed = device_allocator.alloc<int>(nrows_selected, true);
-        int *data_host_compressed = device_allocator.alloc<int>(nrows_selected, false);
-        int *device_ptr = device_ptrs[device_index];
-        int *host_ptr = data_host;
-
-        auto e1 = device_queues[device_index].submit(
-            [&](sycl::handler &cgh)
-            {
-                cgh.parallel_for(
-                    nrows_selected,
-                    [=](sycl::id<1> idx)
-                    {
-                        auto i = idx[0];
-                        int row_id = row_ids_device[i];
-                        data_device_compressed[i] = device_ptr[row_id];
-                    }
-                );
-            }
-        );
-
-        auto e2 = device_queues[device_index].memcpy(
-            data_host_compressed,
-            data_device_compressed,
-            nrows_selected * sizeof(int),
-            e1
-        );
-
-        auto e3 = cpu_queue.submit(
-            [&](sycl::handler &cgh)
-            {
-                cgh.depends_on(e2);
-                cgh.depends_on(e_row_ids_host);
-                cgh.parallel_for(
-                    nrows_selected,
-                    [=](sycl::id<1> idx)
-                    {
-                        auto i = idx[0];
-                        int row_id = row_ids_host[i];
-                        host_ptr[row_id] = data_host_compressed[i];
-                    }
-                );
-            }
-        );
-
         dirty_cache = false;
 
-        return e3;
+        return device_queues[device_index].submit(
+            [&](sycl::handler &cgh)
+            {
+                cgh.depends_on(e_nrows_selected_host);
+                cgh.host_task(
+                    [=]() mutable
+                    {
+                        uint64_t nrows_selected = *nrows_selected_host;
+                        int *data_device_compressed = device_allocator.alloc<int>(nrows_selected, true);
+                        int *data_host_compressed = device_allocator.alloc<int>(nrows_selected, false);
+                        int *device_ptr = device_ptrs[device_index];
+                        int *host_ptr = data_host;
+
+                        auto e1 = device_queues[device_index].submit(
+                            [&](sycl::handler &cgh)
+                            {
+                                cgh.parallel_for(
+                                    nrows_selected,
+                                    [=](sycl::id<1> idx)
+                                    {
+                                        auto i = idx[0];
+                                        int row_id = row_ids_device[i];
+                                        data_device_compressed[i] = device_ptr[row_id];
+                                    }
+                                );
+                            }
+                        );
+
+                        auto e2 = device_queues[device_index].memcpy(
+                            data_host_compressed,
+                            data_device_compressed,
+                            nrows_selected * sizeof(int),
+                            e1
+                        );
+
+                        cpu_queue.submit(
+                            [&](sycl::handler &cgh)
+                            {
+                                cgh.depends_on(e2);
+                                cgh.depends_on(e_row_ids_host);
+                                cgh.parallel_for(
+                                    nrows_selected,
+                                    [=](sycl::id<1> idx)
+                                    {
+                                        auto i = idx[0];
+                                        int row_id = row_ids_host[i];
+                                        host_ptr[row_id] = data_host_compressed[i];
+                                    }
+                                );
+                            }
+                        ).wait();
+                    }
+                );
+            }
+        );
     }
 };
 

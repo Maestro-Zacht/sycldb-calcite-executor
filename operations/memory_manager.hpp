@@ -145,14 +145,20 @@ memory_manager::memory_manager(sycl::queue &queue, uint64_t size, uint64_t max_r
     size_left = size;
     num_regions = (size_left + max_region_size - 1) / max_region_size;
     regions_device.reserve(num_regions);
+    while (size_left > 0)
+    {
+        uint64_t region_size = (size_left > max_region_size) ? max_region_size : size_left;
+        regions_device.emplace_back(queue, region_size, true, false);
+        size_left -= region_size;
+    }
+
+    size_left = size << 1;
+    num_regions = (size_left + max_region_size - 1) / max_region_size;
     regions_host.reserve(num_regions);
     while (size_left > 0)
     {
         uint64_t region_size = (size_left > max_region_size) ? max_region_size : size_left;
-
-        regions_device.emplace_back(queue, region_size, true, false);
         regions_host.emplace_back(queue, region_size, false, false);
-
         size_left -= region_size;
     }
 

@@ -422,13 +422,13 @@ std::chrono::duration<double, std::milli> execute_result(
             }
         }
 
-        if (rel.relOp != RelNodeType::TABLE_SCAN)
-        {
-            std::cout << "rows selected after operation " << id << ": "
-                << count_true_flags(tables[output_table[id]].flags, tables[output_table[id]].col_len, queue, dependencies[id])
-                << "/" << tables[output_table[id]].col_len
-                << std::endl;
-        }
+        // if (rel.relOp != RelNodeType::TABLE_SCAN)
+        // {
+        //     std::cout << "rows selected after operation " << id << ": "
+        //         << count_true_flags(tables[output_table[id]].flags, tables[output_table[id]].col_len, queue, dependencies[id])
+        //         << "/" << tables[output_table[id]].col_len
+        //         << std::endl;
+        // }
     }
 
     #if USE_FUSION
@@ -512,17 +512,18 @@ int normal_execution(int argc, char **argv)
     CalciteServerClient client(protocol);
     std::string sql;
     sycl::queue queue{
-        sycl::gpu_selector_v,
+        sycl::cpu_selector_v,
         #if USE_FUSION
         sycl::ext::codeplay::experimental::property::queue::enable_fusion {}
         #endif
     };
-    memory_manager table_allocator(queue, SIZE_TEMP_MEMORY_CPU, SIZE_TEMP_MEMORY_CPU); // memory manager for table allocations (on host)
-    memory_manager gpu_allocator(queue, SIZE_TEMP_MEMORY_GPU, SIZE_TEMP_MEMORY_GPU); // memory manager for temporary allocations during query execution
 
     #if not PERFORMANCE_MEASUREMENT_ACTIVE
     std::cout << "Running on: " << queue.get_device().get_info<sycl::info::device::name>() << std::endl;
     #endif
+
+    memory_manager table_allocator(queue, SIZE_TEMP_MEMORY_CPU, SIZE_TEMP_MEMORY_CPU); // memory manager for table allocations (on host)
+    memory_manager gpu_allocator(queue, SIZE_TEMP_MEMORY_GPU, SIZE_TEMP_MEMORY_GPU); // memory manager for temporary allocations during query execution
 
     if (argc == 2)
     {
@@ -558,10 +559,10 @@ int normal_execution(int argc, char **argv)
         #if PERFORMANCE_MEASUREMENT_ACTIVE
         std::string sql_filename = argv[1];
         std::string query_name = sql_filename.substr(sql_filename.find_last_of("/") + 1, 3);
-        std::ofstream perf_file(query_name + "-performance-cpu-s100.log", std::ios::out | std::ios::trunc);
+        std::ofstream perf_file(query_name + "-performance-xpu-nofusion-cpu-s100.log", std::ios::out | std::ios::trunc);
         if (!perf_file.is_open())
         {
-            std::cerr << "Could not open performance log file: " << query_name << "-performance-cpu-s100.log" << std::endl;
+            std::cerr << "Could not open performance log file: " << query_name << "-performance-xpu-nofusion-cpu-s100.log" << std::endl;
             return 1;
         }
 
@@ -572,14 +573,14 @@ int normal_execution(int argc, char **argv)
             client.parse(result, sql);
             // std::cout << "Starting repetition " << i + 1 << "/" << PERFORMANCE_REPETITIONS << std::endl;
             auto start = std::chrono::high_resolution_clock::now();
-            auto exec_time = execute_result(result, argv[1], all_tables, queue, gpu_allocator);
+            auto exec_time = execute_result(result, argv[1], all_tables, queue, gpu_allocator, perf_file);
             auto end = std::chrono::high_resolution_clock::now();
             std::chrono::duration<double, std::milli> total_time = end - start;
 
             std::cout << "Repetition " << i + 1 << "/" << PERFORMANCE_REPETITIONS
                 << " - " << exec_time.count() << " ms - "
                 << total_time.count() << " ms" << std::endl;
-            perf_file << total_time.count() << '\n';
+            // perf_file << total_time.count() << '\n';
             gpu_allocator.reset();
         }
         perf_file.close();
@@ -903,17 +904,21 @@ int data_driven_operator_replacement(int argc, char **argv)
             << "\nPlatform: " << platform
             << "\nBackend: " << backend;
 
-        if (backend == sycl::backend::opencl) // ignore 1. opencl gpu as it is already with level_zero (leave this) 2. ignore intel gpu because it breaks (remove if fix found)
+        if (backend == sycl::backend::opencl) // ignore 1. opencl gpu as it is already with level_zero (leave this)
             std::cout << "\n(ignored)";
-        else
+        else if (backend == sycl::backend::ext_oneapi_cuda)
+        {
             device_queues.emplace_back(
                 #if USE_FUSION
                 gpu,
                 sycl::ext::codeplay::experimental::property::queue::enable_fusion {}
-        #else
+            #else
                 gpu
                 #endif
             );
+            // if (device_queues.size() == 3)
+            break;
+        }
 
         std::cout << "\n---------------------------------" << std::endl;
     }
@@ -970,29 +975,29 @@ int data_driven_operator_replacement(int argc, char **argv)
         std::cout << table.get_name() << " num segments: " << table.num_segments() << std::endl;
     }
 
-    tables[0].move_column_to_device(0, 0);
-    tables[0].move_column_to_device(2, 0);
-    tables[0].move_column_to_device(3, 0);
-    tables[0].move_column_to_device(4, 0);
+    // tables[0].move_column_to_device(0, 3);
+    // tables[0].move_column_to_device(2, 3);
+    // tables[0].move_column_to_device(3, 3);
+    // tables[0].move_column_to_device(4, 3);
 
-    tables[1].move_column_to_device(0, 1);
-    tables[1].move_column_to_device(3, 1);
-    tables[1].move_column_to_device(4, 1);
-    tables[1].move_column_to_device(5, 1);
+    // tables[1].move_column_to_device(0, 0);
+    // tables[1].move_column_to_device(3, 0);
+    // tables[1].move_column_to_device(4, 0);
+    // tables[1].move_column_to_device(5, 0);
 
-    tables[2].move_column_to_device(0, 2);
-    tables[2].move_column_to_device(3, 2);
-    tables[2].move_column_to_device(4, 2);
-    tables[2].move_column_to_device(5, 2);
+    // tables[2].move_column_to_device(0, 2);
+    // tables[2].move_column_to_device(3, 2);
+    // tables[2].move_column_to_device(4, 2);
+    // tables[2].move_column_to_device(5, 2);
 
-    tables[3].move_column_to_device(0, 3);
-    tables[3].move_column_to_device(4, 3);
-    tables[3].move_column_to_device(5, 3);
+    // tables[3].move_column_to_device(0, 0);
+    // tables[3].move_column_to_device(4, 0);
+    // tables[3].move_column_to_device(5, 0);
 
-    tables[4].move_column_to_device(2, 2); // lo_custkey
-    tables[4].move_column_to_device(3, 0); // lo_partkey
-    tables[4].move_column_to_device(4, 1); // lo_suppkey
-    tables[4].move_column_to_device(5, 3); // lo_orderdate
+    // tables[4].move_column_to_device(2, 2); // lo_custkey
+    // tables[4].move_column_to_device(3, 3); // lo_partkey
+    // tables[4].move_column_to_device(4, 0); // lo_suppkey
+    // tables[4].move_column_to_device(5, 0); // lo_orderdate
 
     // tables[4].move_column_to_device(8, 0);
     // tables[4].move_column_to_device(9, 0);
@@ -1002,7 +1007,7 @@ int data_driven_operator_replacement(int argc, char **argv)
     // tables[4].move_column_to_device(14, 0);
 
     // for (int i = 0; i < MAX_NTABLES; i++)
-    //     tables[i].move_all_to_device(1);
+    //     tables[i].move_all_to_device(0);
 
     for (auto &gpu_queue : device_queues)
         gpu_queue.wait_and_throw();
@@ -1046,10 +1051,10 @@ int data_driven_operator_replacement(int argc, char **argv)
         #if PERFORMANCE_MEASUREMENT_ACTIVE
         std::string sql_filename = argv[1];
         std::string query_name = sql_filename.substr(sql_filename.find_last_of("/") + 1, 3);
-        std::ofstream perf_file(query_name + "-performance-hybrid-4multigpu-s20.log", std::ios::out | std::ios::trunc);
+        std::ofstream perf_file(query_name + "-performance-xpu-segments-fusion-cpu-s100.log", std::ios::out | std::ios::trunc);
         if (!perf_file.is_open())
         {
-            std::cerr << "Could not open performance log file: " << query_name << "-performance-hybrid-4multigpu-s20.log" << std::endl;
+            std::cerr << "Could not open performance log file: " << query_name << "-performance-xpu-segments-fusion-cpu-s100.log" << std::endl;
             return 1;
         }
 
@@ -1226,9 +1231,9 @@ int test(int argc, char **argv)
 
 int main(int argc, char **argv)
 {
-    int r = test(argc, argv);
+    // int r = test(argc, argv);
     // int r = normal_execution(argc, argv);
-    // int r = data_driven_operator_replacement(argc, argv);
+    int r = data_driven_operator_replacement(argc, argv);
 
     #if not PERFORMANCE_MEASUREMENT_ACTIVE
     std::cout << "Return code: " << r << std::endl;
