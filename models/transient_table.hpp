@@ -406,18 +406,29 @@ public:
             if (d != device_index)
                 pending_kernels_dependencies_devices[d] = deps.second[d];
 
-        device_queues[device_index].wait();
-
         for (int i = 0; i < num_segments; i++)
         {
             int *row_ids_gpu = nullptr, *row_ids_host = nullptr;
             uint64_t segment_size = (i == num_segments - 1) ? (nrows - i * SEGMENT_SIZE) : SEGMENT_SIZE,
                 *n_rows_new_host = nullptr;
             sycl::event e_row_ids_gpu, e_row_ids_host;
+            std::vector<sycl::event> deps_segment_device, deps_segment_cpu;
+            deps_segment_device.reserve(deps.second[device_index].size());
+            deps_segment_cpu.reserve(deps.first.size());
+
+            if (deps.second[device_index].size() == num_segments)
+                deps_segment_device.push_back(deps.second[device_index][i]);
+            else
+                deps_segment_device = deps.second[device_index];
+
+            if (deps.first.size() == num_segments)
+                deps_segment_cpu.push_back(deps.first[i]);
+            else
+                deps_segment_cpu = deps.first;
 
             if (flags_modified_devices[device_index][i])
             {
-                auto row_id_res = build_row_ids(i, segment_size, device_allocator, device_index);
+                auto row_id_res = build_row_ids(i, segment_size, device_allocator, device_index, deps_segment_device);
 
                 row_ids_gpu = std::get<0>(row_id_res);
                 e_row_ids_gpu = std::get<1>(row_id_res);
@@ -440,7 +451,7 @@ public:
                 {
                     if (row_ids_gpu == nullptr)
                     {
-                        auto row_id_res = build_row_ids(i, segment_size, device_allocator, device_index);
+                        auto row_id_res = build_row_ids(i, segment_size, device_allocator, device_index, deps_segment_device);
 
                         row_ids_gpu = std::get<0>(row_id_res);
                         e_row_ids_gpu = std::get<1>(row_id_res);
@@ -470,12 +481,12 @@ public:
             if (flags_modified_devices[device_index][i])
             {
                 bool *flags = flags_host + i * SEGMENT_SIZE;
-                cpu_queue.wait();
 
                 cpu_queue.submit(
                     [&](sycl::handler &cgh)
                     {
                         cgh.depends_on(e_row_ids_host);
+                        cgh.depends_on(deps_segment_cpu);
                         cgh.parallel_for(
                             (*n_rows_new_host) - 1,
                             [=](sycl::id<1> idx)
@@ -499,7 +510,8 @@ public:
                     cpu_queue.memset(
                         flags,
                         0,
-                        first_row_id * sizeof(bool)
+                        first_row_id * sizeof(bool),
+                        deps_segment_cpu
                     );
                 }
 
@@ -509,7 +521,8 @@ public:
                     cpu_queue.memset(
                         flags + last_row_id + 1,
                         0,
-                        (segment_size - 1 - last_row_id) * sizeof(bool)
+                        (segment_size - 1 - last_row_id) * sizeof(bool),
+                        deps_segment_cpu
                     );
                 }
 
