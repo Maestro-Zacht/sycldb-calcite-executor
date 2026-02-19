@@ -502,29 +502,40 @@ public:
                     }
                 );
 
-                e_row_ids_host.wait();
+                sycl::queue cpu_queue = this->cpu_queue;
 
-                int first_row_id = row_ids_host[0];
-                if (first_row_id > 0)
-                {
-                    cpu_queue.memset(
-                        flags,
-                        0,
-                        first_row_id * sizeof(bool),
-                        deps_segment_cpu
-                    );
-                }
+                cpu_queue.submit(
+                    [&](sycl::handler &cgh)
+                    {
+                        cgh.depends_on(e_row_ids_host);
+                        cgh.host_task(
+                            [=]() mutable
+                            {
+                                int first_row_id = row_ids_host[0];
+                                if (first_row_id > 0)
+                                {
+                                    cpu_queue.memset(
+                                        flags,
+                                        0,
+                                        first_row_id * sizeof(bool),
+                                        deps_segment_cpu
+                                    );
+                                }
 
-                int last_row_id = row_ids_host[(*n_rows_new_host) - 1];
-                if (last_row_id < segment_size - 1)
-                {
-                    cpu_queue.memset(
-                        flags + last_row_id + 1,
-                        0,
-                        (segment_size - 1 - last_row_id) * sizeof(bool),
-                        deps_segment_cpu
-                    );
-                }
+                                int last_row_id = row_ids_host[(*n_rows_new_host) - 1];
+                                if (last_row_id < segment_size - 1)
+                                {
+                                    cpu_queue.memset(
+                                        flags + last_row_id + 1,
+                                        0,
+                                        (segment_size - 1 - last_row_id) * sizeof(bool),
+                                        deps_segment_cpu
+                                    );
+                                }
+                            }
+                        );
+                    }
+                );
 
                 flags_modified_devices[device_index][i] = false;
             }
