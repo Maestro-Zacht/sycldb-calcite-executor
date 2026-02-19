@@ -408,7 +408,7 @@ public:
 
         for (int i = 0; i < num_segments; i++)
         {
-            int *row_ids_gpu = nullptr, *row_ids_host = nullptr;
+            int *row_ids_gpu = nullptr, **row_ids_host_ptr = cpu_allocator.alloc<int *>(1, false);
             uint64_t segment_size = (i == num_segments - 1) ? (nrows - i * SEGMENT_SIZE) : SEGMENT_SIZE,
                 *n_rows_new_host = nullptr;
             sycl::event e_row_ids_gpu, e_row_ids_host, e_n_rows_new_host;
@@ -437,7 +437,6 @@ public:
 
                 sycl::queue device_queue = device_queues[device_index];
                 memory_manager *device_allocator_ptr = &device_allocator;
-                int **row_ids_host_ptr = &row_ids_host;
 
                 e_row_ids_host = device_queue.submit(
                     [&](sycl::handler &cgh)
@@ -475,7 +474,6 @@ public:
 
                         sycl::queue device_queue = device_queues[device_index];
                         memory_manager *device_allocator_ptr = &device_allocator;
-                        int **row_ids_host_ptr = &row_ids_host;
 
                         e_row_ids_host = device_queue.submit(
                             [&](sycl::handler &cgh)
@@ -501,7 +499,7 @@ public:
                     e_row_ids_host.wait();
                     seg.compress_sync(
                         row_ids_gpu,
-                        row_ids_host,
+                        *row_ids_host_ptr,
                         e_row_ids_host,
                         *n_rows_new_host,
                         device_allocator,
@@ -514,7 +512,7 @@ public:
             {
                 bool *flags = flags_host + i * SEGMENT_SIZE;
 
-                e_row_ids_host.wait();
+                e_n_rows_new_host.wait();
                 cpu_queue.submit(
                     [&](sycl::handler &cgh)
                     {
@@ -525,8 +523,8 @@ public:
                             [=](sycl::id<1> idx)
                             {
                                 auto i = idx[0];
-                                int row_id = row_ids_host[i],
-                                    next_row_id = row_ids_host[i + 1];
+                                int row_id = (*row_ids_host_ptr)[i],
+                                    next_row_id = (*row_ids_host_ptr)[i + 1];
 
                                 for (int r = row_id + 1; r < next_row_id; r++)
                                     flags[r] = false;
@@ -544,7 +542,7 @@ public:
                         cgh.host_task(
                             [=]() mutable
                             {
-                                int first_row_id = row_ids_host[0];
+                                int first_row_id = (*row_ids_host_ptr)[0];
                                 if (first_row_id > 0)
                                 {
                                     cpu_queue.memset(
@@ -555,7 +553,7 @@ public:
                                     );
                                 }
 
-                                int last_row_id = row_ids_host[(*n_rows_new_host) - 1];
+                                int last_row_id = (*row_ids_host_ptr)[(*n_rows_new_host) - 1];
                                 if (last_row_id < segment_size - 1)
                                 {
                                     cpu_queue.memset(

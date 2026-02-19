@@ -975,29 +975,29 @@ int data_driven_operator_replacement(int argc, char **argv)
         std::cout << table.get_name() << " num segments: " << table.num_segments() << std::endl;
     }
 
-    // tables[0].move_column_to_device(0, 3);
-    // tables[0].move_column_to_device(2, 3);
-    // tables[0].move_column_to_device(3, 3);
-    // tables[0].move_column_to_device(4, 3);
+    tables[0].move_column_to_device(0, 0);
+    tables[0].move_column_to_device(2, 0);
+    tables[0].move_column_to_device(3, 0);
+    tables[0].move_column_to_device(4, 0);
 
-    // tables[1].move_column_to_device(0, 0);
-    // tables[1].move_column_to_device(3, 0);
-    // tables[1].move_column_to_device(4, 0);
-    // tables[1].move_column_to_device(5, 0);
+    tables[1].move_column_to_device(0, 0);
+    tables[1].move_column_to_device(3, 0);
+    tables[1].move_column_to_device(4, 0);
+    tables[1].move_column_to_device(5, 0);
 
-    // tables[2].move_column_to_device(0, 2);
-    // tables[2].move_column_to_device(3, 2);
-    // tables[2].move_column_to_device(4, 2);
-    // tables[2].move_column_to_device(5, 2);
+    tables[2].move_column_to_device(0, 0);
+    tables[2].move_column_to_device(3, 0);
+    tables[2].move_column_to_device(4, 0);
+    tables[2].move_column_to_device(5, 0);
 
-    // tables[3].move_column_to_device(0, 0);
-    // tables[3].move_column_to_device(4, 0);
-    // tables[3].move_column_to_device(5, 0);
+    tables[3].move_column_to_device(0, 0);
+    tables[3].move_column_to_device(4, 0);
+    tables[3].move_column_to_device(5, 0);
 
-    // tables[4].move_column_to_device(2, 2); // lo_custkey
-    // tables[4].move_column_to_device(3, 3); // lo_partkey
-    // tables[4].move_column_to_device(4, 0); // lo_suppkey
-    // tables[4].move_column_to_device(5, 0); // lo_orderdate
+    tables[4].move_column_to_device(2, 0); // lo_custkey
+    tables[4].move_column_to_device(3, 0); // lo_partkey
+    tables[4].move_column_to_device(4, 0); // lo_suppkey
+    tables[4].move_column_to_device(5, 0); // lo_orderdate
 
     // tables[4].move_column_to_device(8, 0);
     // tables[4].move_column_to_device(9, 0);
@@ -1127,13 +1127,17 @@ int data_driven_operator_replacement(int argc, char **argv)
 
         transport->close();
     }
-    catch (TTransportException &e)
+    catch (const TTransportException &e)
     {
         std::cerr << "Transport exception: " << e.what() << std::endl;
     }
-    catch (TException &e)
+    catch (const TException &e)
     {
         std::cerr << "Thrift exception: " << e.what() << std::endl;
+    }
+    catch (const std::exception &e)
+    {
+        std::cerr << "Standard exception: " << e.what() << std::endl;
     }
     catch (...)
     {
